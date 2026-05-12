@@ -1,6 +1,7 @@
 package com.youtu.graphrag.server.api
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.youtu.graphrag.shared.ingest.DocumentParser
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
@@ -43,6 +44,67 @@ class DatasetFileServiceTest {
         assertEquals(1, corpusNode.size())
         assertEquals("My file.txt", corpusNode[0]["title"].asText())
         assertEquals("hello world", corpusNode[0]["text"].asText())
+    }
+
+    @Test
+    fun `upload files parses document formats when parser returns text`() {
+        val root = createRootDir()
+        val parser =
+            object : DocumentParser {
+                override fun parseFile(
+                    path: String,
+                    extension: String,
+                ): String = "parsed document body"
+            }
+        val service = DatasetFileService(rootDir = root, clock = fixedClock(), documentParser = parser)
+        service.ensureStartupDirectories()
+
+        val result =
+            service.uploadFiles(
+                listOf(
+                    IncomingFile(
+                        fileName = "notes.docx",
+                        bytes = "placeholder".encodeToByteArray(),
+                    ),
+                ),
+            )
+
+        assertTrue(result.success)
+        assertEquals(1, result.filesCount)
+
+        val corpusPath = root.resolve("data/uploaded/notes/corpus.json")
+        val corpusNode = mapper.readTree(corpusPath.toFile())
+        assertEquals("notes.docx", corpusNode[0]["title"].asText())
+        assertEquals("parsed document body", corpusNode[0]["text"].asText())
+    }
+
+    @Test
+    fun `upload files skips document formats when parser returns empty text`() {
+        val root = createRootDir()
+        val parser =
+            object : DocumentParser {
+                override fun parseFile(
+                    path: String,
+                    extension: String,
+                ): String = ""
+            }
+        val service = DatasetFileService(rootDir = root, clock = fixedClock(), documentParser = parser)
+        service.ensureStartupDirectories()
+
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                service.uploadFiles(
+                    listOf(
+                        IncomingFile(
+                            fileName = "report.pdf",
+                            bytes = "placeholder".encodeToByteArray(),
+                        ),
+                    ),
+                )
+            }
+
+        assertTrue(error.message?.contains("No supported files were uploaded") == true)
+        assertTrue(error.message?.contains("report.pdf") == true)
     }
 
     @Test

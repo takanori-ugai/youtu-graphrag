@@ -37,6 +37,7 @@ import io.ktor.websocket.close
 import kotlinx.serialization.json.Json
 import java.nio.file.Path
 import java.time.Instant
+import java.time.LocalDateTime
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
@@ -238,6 +239,23 @@ fun Application.youtuGraphRagModule() {
                     message = "Construction failed: Dataset not found",
                 )
                 call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Dataset not found"))
+            } catch (error: IllegalArgumentException) {
+                logger.warn(error) { "Invalid construction request for '${request.datasetName}'" }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "construction",
+                    progress = 0,
+                    message = "Construction failed: Invalid request",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "construction",
+                    message = "Construction failed: Invalid request",
+                )
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid request"))
             } catch (error: Exception) {
                 logger.error(error) { "Graph construction failed for dataset '${request.datasetName}'" }
                 sendProgressUpdate(
@@ -274,7 +292,7 @@ fun Application.youtuGraphRagModule() {
                 clientId = clientId,
                 stage = "retrieval",
                 progress = 10,
-                message = "Initializing retrieval system...",
+                message = "Initializing retrieval system (agent mode)...",
             )
             sendQaUpdate(
                 wsManager = wsManager,
@@ -293,15 +311,38 @@ fun Application.youtuGraphRagModule() {
                     wsManager = wsManager,
                     clientId = clientId,
                     stage = "retrieval",
-                    progress = 50,
-                    message = "Running decomposition and retrieval...",
+                    progress = 40,
+                    message = "Building indices...",
                 )
+                var initialRetrievalProgressSent = false
 
                 val response =
                     questionAnsweringService.answerQuestion(
                         datasetName = request.datasetName,
                         question = request.question,
                         onQaUpdate = { update ->
+                            qaProgressUpdateForStage(update)?.let { (progress, message) ->
+                                if (update.stage == "sub_question") {
+                                    if (!initialRetrievalProgressSent) {
+                                        sendProgressUpdate(
+                                            wsManager = wsManager,
+                                            clientId = clientId,
+                                            stage = "retrieval",
+                                            progress = progress,
+                                            message = message,
+                                        )
+                                        initialRetrievalProgressSent = true
+                                    }
+                                } else {
+                                    sendProgressUpdate(
+                                        wsManager = wsManager,
+                                        clientId = clientId,
+                                        stage = "retrieval",
+                                        progress = progress,
+                                        message = message,
+                                    )
+                                }
+                            }
                             sendQaUpdate(
                                 wsManager = wsManager,
                                 clientId = clientId,
@@ -327,7 +368,7 @@ fun Application.youtuGraphRagModule() {
                             "sub_questions_count" to response.subQuestions.size,
                             "triples_final_count" to response.retrievedTriples.size,
                             "chunks_final_count" to response.retrievedChunks.size,
-                            "timestamp" to Instant.now().toString(),
+                            "timestamp" to websocketTimestamp(),
                         ),
                 )
 
@@ -349,6 +390,23 @@ fun Application.youtuGraphRagModule() {
                     message = "Question answering failed: Graph not found",
                 )
                 call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Graph not found"))
+            } catch (error: IllegalArgumentException) {
+                logger.warn(error) { "Invalid question answering request for '${request.datasetName}'" }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "retrieval",
+                    progress = 0,
+                    message = "Question answering failed: Invalid request",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "retrieval",
+                    message = "Question answering failed: Invalid request",
+                )
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid request"))
             } catch (error: Exception) {
                 logger.error(error) { "Question answering failed for dataset '${request.datasetName}'" }
                 sendProgressUpdate(
@@ -514,6 +572,23 @@ fun Application.youtuGraphRagModule() {
                     message = "Reconstruction failed: Dataset not found",
                 )
                 call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Dataset not found"))
+            } catch (error: IllegalArgumentException) {
+                logger.warn(error) { "Invalid reconstruction request for '$datasetName'" }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "reconstruction",
+                    progress = 0,
+                    message = "Reconstruction failed: Invalid request",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "reconstruction",
+                    message = "Reconstruction failed: Invalid request",
+                )
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid request"))
             } catch (error: Exception) {
                 logger.error(error) { "Reconstruction failed for '$datasetName'" }
                 sendProgressUpdate(
@@ -539,14 +614,22 @@ fun Application.youtuGraphRagModule() {
 
         get("/api/graph/{dataset_name}") {
             val datasetName = call.parameters["dataset_name"] ?: "demo"
-            val graphData =
-                graphConstructionService.loadGraphVisualization(datasetName) ?: run {
-                    val payload = objectMapper.writeValueAsString(defaultGraphVisualization())
-                    call.respondText(payload, ContentType.Application.Json)
-                    return@get
-                }
-            val payload = graphData.toString()
-            call.respondText(payload, ContentType.Application.Json)
+            try {
+                val graphData =
+                    graphConstructionService.loadGraphVisualization(datasetName) ?: run {
+                        val payload = objectMapper.writeValueAsString(defaultGraphVisualization())
+                        call.respondText(payload, ContentType.Application.Json)
+                        return@get
+                    }
+                val payload = graphData.toString()
+                call.respondText(payload, ContentType.Application.Json)
+            } catch (error: IllegalArgumentException) {
+                logger.warn(error) { "Invalid graph request for '$datasetName'" }
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid dataset name"))
+            } catch (error: Exception) {
+                logger.error(error) { "Failed to load graph for '$datasetName'" }
+                call.respond(HttpStatusCode.InternalServerError, mapOf("detail" to "Failed to load graph"))
+            }
         }
     }
 
@@ -578,7 +661,7 @@ suspend fun sendProgressUpdate(
                 "stage" to stage,
                 "progress" to progress,
                 "message" to message,
-                "timestamp" to Instant.now().toString(),
+                "timestamp" to websocketTimestamp(),
             ),
     )
 }
@@ -597,7 +680,7 @@ suspend fun sendStageEvent(
                 "type" to type,
                 "stage" to stage,
                 "message" to message,
-                "timestamp" to Instant.now().toString(),
+                "timestamp" to websocketTimestamp(),
             ),
     )
 }
@@ -612,7 +695,7 @@ suspend fun sendQaUpdate(
         mutableMapOf<String, Any?>(
             "type" to "qa_update",
             "stage" to stage,
-            "timestamp" to Instant.now().toString(),
+            "timestamp" to websocketTimestamp(),
         )
     payload.putAll(extra)
 
@@ -621,6 +704,41 @@ suspend fun sendQaUpdate(
         message = payload,
     )
 }
+
+private fun websocketTimestamp(): String = LocalDateTime.now().toString()
+
+internal fun qaProgressUpdateForStage(update: QaStageUpdate): Pair<Int, String>? =
+    when (update.stage) {
+        "decompose" -> {
+            50 to "Decomposing question..."
+        }
+
+        "sub_question" -> {
+            65 to "Initial retrieval..."
+        }
+
+        "ircot_start" -> {
+            75 to "Iterative reasoning..."
+        }
+
+        "ircot" -> {
+            val step = update.payload["step"].coerceIntOrNull() ?: return null
+            minOf(90, 75 + step * 5) to "Iterative retrieval step $step..."
+        }
+
+        else -> {
+            null
+        }
+    }
+
+private fun Any?.coerceIntOrNull(): Int? =
+    when (this) {
+        is Int -> this
+        is Long -> this.toInt()
+        is Number -> this.toInt()
+        is String -> this.toIntOrNull()
+        else -> null
+    }
 
 private fun defaultGraphVisualization(): Map<String, Any> =
     mapOf(

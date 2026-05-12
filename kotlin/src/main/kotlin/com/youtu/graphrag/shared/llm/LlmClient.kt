@@ -43,16 +43,19 @@ object LlmClientFactory {
     private val logger = KotlinLogging.logger {}
 
     fun fromEnvironment(env: Map<String, String> = System.getenv()): LlmClient {
-        val provider = env["OPENAI_PROVIDER"]?.trim()?.lowercase().orEmpty()
+        val provider = env.firstNonBlank("OPENAI_PROVIDER")?.lowercase() ?: "openai"
         return when (provider) {
             "ollama" -> {
                 createOllamaClient(env)
             }
 
-            "openai",
             "azure",
-            "",
+            "azure_openai",
             -> {
+                createAzureOpenAiCompatibleClient(env)
+            }
+
+            "openai" -> {
                 createOpenAiClient(env)
             }
 
@@ -64,25 +67,16 @@ object LlmClientFactory {
     }
 
     private fun createOpenAiClient(env: Map<String, String>): LlmClient {
-        val apiKey =
-            env["LLM_API_KEY"]?.takeIf { it.isNotBlank() }
-                ?: env["OPENAI_API_KEY"]?.takeIf { it.isNotBlank() }
-                ?: return NoopLlmClient()
-
-        val modelName =
-            env["LLM_MODEL"]?.takeIf { it.isNotBlank() }
-                ?: env["OPENAI_MODEL"]?.takeIf { it.isNotBlank() }
-                ?: "gpt-4o-mini"
+        val apiKey = env.firstNonBlank("LLM_API_KEY", "OPENAI_API_KEY") ?: return NoopLlmClient()
+        val modelName = env.firstNonBlank("LLM_MODEL", "OPENAI_MODEL") ?: "deepseek-chat"
+        val baseUrl = env.firstNonBlank("LLM_BASE_URL", "OPENAI_BASE_URL") ?: "https://api.deepseek.com"
 
         val builder =
             OpenAiChatModel
                 .builder()
                 .apiKey(apiKey)
                 .modelName(modelName)
-
-        env["LLM_BASE_URL"]?.takeIf { it.isNotBlank() }?.let(builder::baseUrl)
-            ?: env["OPENAI_BASE_URL"]?.takeIf { it.isNotBlank() }?.let(builder::baseUrl)
-            ?: env["AZURE_OPENAI_ENDPOINT"]?.takeIf { it.isNotBlank() }?.let(builder::baseUrl)
+                .baseUrl(baseUrl)
 
         env["LLM_TEMPERATURE"]?.toDoubleOrNull()?.let(builder::temperature)
             ?: builder.temperature(0.3)
@@ -95,16 +89,41 @@ object LlmClientFactory {
         }
     }
 
-    private fun createOllamaClient(env: Map<String, String>): LlmClient {
-        val modelName =
-            env["LLM_MODEL"]?.takeIf { it.isNotBlank() }
-                ?: env["OLLAMA_MODEL"]?.takeIf { it.isNotBlank() }
-                ?: "llama3"
+    private fun createAzureOpenAiCompatibleClient(env: Map<String, String>): LlmClient {
+        val apiKey =
+            env.firstNonBlank(
+                "LLM_API_KEY",
+                "AZURE_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+            ) ?: return NoopLlmClient()
+        val deploymentName = env.firstNonBlank("LLM_MODEL", "OPENAI_MODEL", "AZURE_OPENAI_DEPLOYMENT") ?: return NoopLlmClient()
+        val endpoint = env.firstNonBlank("LLM_BASE_URL", "AZURE_OPENAI_ENDPOINT", "OPENAI_BASE_URL") ?: return NoopLlmClient()
+        val apiVersion = env.firstNonBlank("API_VERSION", "AZURE_OPENAI_API_VERSION") ?: "2025-01-01-preview"
 
-        val baseUrl =
-            env["LLM_BASE_URL"]?.takeIf { it.isNotBlank() }
-                ?: env["OLLAMA_BASE_URL"]?.takeIf { it.isNotBlank() }
-                ?: "http://localhost:11434"
+        val baseUrl = "${endpoint.trimEnd('/')}/openai/deployments/$deploymentName"
+        val builder =
+            OpenAiChatModel
+                .builder()
+                .apiKey(apiKey)
+                .modelName(deploymentName)
+                .baseUrl(baseUrl)
+                .customHeaders(mapOf("api-key" to apiKey))
+                .customQueryParams(mapOf("api-version" to apiVersion))
+
+        env["LLM_TEMPERATURE"]?.toDoubleOrNull()?.let(builder::temperature)
+            ?: builder.temperature(0.3)
+
+        return runCatching {
+            ChatModelLlmClient(builder.build())
+        }.getOrElse { error ->
+            logger.warn(error) { "Failed to initialize Azure OpenAI-compatible ChatModel. Falling back to NoopLlmClient." }
+            NoopLlmClient()
+        }
+    }
+
+    private fun createOllamaClient(env: Map<String, String>): LlmClient {
+        val modelName = env.firstNonBlank("LLM_MODEL", "OLLAMA_MODEL") ?: "llama3"
+        val baseUrl = env.firstNonBlank("LLM_BASE_URL", "OLLAMA_BASE_URL") ?: "http://localhost:11434"
 
         val builder =
             OllamaChatModel
@@ -122,4 +141,10 @@ object LlmClientFactory {
             NoopLlmClient()
         }
     }
+
+    private fun Map<String, String>.firstNonBlank(vararg keys: String): String? =
+        keys
+            .asSequence()
+            .mapNotNull { key -> this[key]?.trim() }
+            .firstOrNull { value -> value.isNotBlank() }
 }

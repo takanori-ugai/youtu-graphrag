@@ -51,21 +51,39 @@ The Kotlin version is considered compliant when all of the following pass:
   - Reconstruction route + progress/complete/error WS signaling
   - Initial QA route implementation with retrieval results and QA WS signaling
   - Static frontend/assets serving parity in Ktor (`/`, `/frontend`, `/assets`)
+  - Upload-time document parsing baseline in Kotlin (`.pdf`, `.docx`, `.doc`) wired into `DatasetFileService` with corpus ingestion + skip-on-empty behavior
+  - Legacy Word `.doc` parsing upgraded from heuristic decoding to Apache POI extraction path (with `.docx` POI-first parsing and XML fallback)
+  - Retrieval WebSocket parity pass: Python-aligned `progress` cadence/messages for `ask-question` (`10/40/50/65/75/.../100`) bridged from Kotlin `qa_update` stages, while preserving `qa_update` and `qa_complete` summary payloads
   - CLI now executes dataset workflows (constructor cache cleanup/build + retrieval over QA files with JSON result logs)
   - Shared QA pipeline now supports multi-subquestion decomposition and optional parallel sub-question retrieval
   - CLI retrieval now reuses `QuestionAnsweringService` outputs (reasoning steps, visualization payload snapshot, simple eval summary)
   - Initial LLM integration using LangChain4j `ChatModel` (OpenAI/Ollama factory + QA prompt/answer path wiring)
   - LLM output cleanup + JSON repair utility (`LlmOutputParser`) and GraphQ LLM decomposition parsing/fallback wiring
+  - LLM provider/env matrix parity improvements (default OpenAI provider, Python-aligned defaults, Azure endpoint/deployment/api-version mapping, api-key header support)
   - OpenAI-compatible `ChatModel` call-path integration test with local mock `/v1/chat/completions` server
+  - Azure-compatible `ChatModel` request-shape integration test (deployment path + `api-version` query + `api-key` header)
+  - Retrieval prompt template selection parity for dataset-specific modes (`general`, `novel`, `novel_eng`) in Kotlin retriever
+  - Retriever parity slice: type-filtered retrieval (`involved_types`) + adjacency-based path expansion (`recall_paths`) + triple reranking + merged chunk-id aggregation in Kotlin `KTRetriever`
+  - Retriever parity tests for type filtering, path expansion, and chunk/triple output shaping (`KTRetrieverTest`)
+  - Local vector retrieval baseline for Kotlin retriever (`LocalVectorIndex` + hash embeddings) with hybrid lexical+vector reranking for triples/chunks and config-driven fallback (`retrieval.enable_reranking`)
+  - Lucene HNSW ANN index integration for retriever vector search (`LuceneAnnIndex`) with automatic fallback to local vector index
+  - ANN-focused retriever tests (`LuceneAnnIndexTest`) and hybrid strategy wiring in `KTRetriever`
+  - Embedding cache persistence/reload baseline in Kotlin retriever (`triple_embedding_cache.json` and `chunk_embedding_cache.json`) with model/dimension metadata validation and stale-entry pruning
+  - Python-compatible NPZ embedding cache artifact support in Kotlin retriever (`chunk_embedding_cache.npz` + `triple_embedding_cache.npz`) with read/write integration and regression tests
+  - Cache on/off behavior tests for retriever indices (`KTRetrieverTest`)
+  - Configurable retriever embedding backend abstraction (`TextEmbedder`) with OpenAI-compatible embeddings mode and deterministic hash fallback (`RetrieverEmbedderFactory` + `OpenAiTextEmbedder`)
+  - OpenAI-compatible embeddings call-path tests and fallback coverage (`TextEmbedderFactoryTest`)
+  - Python `.pt` embedding-cache interoperability hooks for retriever caches (`TorchCacheInterop`): auto-attempt `.pt`->`.npz` conversion on load and optional `.npz`->`.pt` export (`embeddings.export_pt_cache`)
+  - PT interoperability regression tests for conversion hooks and `.pt`-named cache ingestion (`TorchCacheInteropTest`, `KTRetrieverTest`)
   - Focused and full Gradle test suites passing after LLM/decomposition parity updates (`./gradlew --no-daemon test`)
   - Test scaffolding for parity helpers and services
 - In progress:
   - Full constructor parity with Python extraction pipeline and schema evolution
-  - Retriever/indexing parity beyond baseline keyword matching
+  - Retriever/indexing parity for Python-equivalent local embedding model and full Python cache-format compatibility (Kotlin now supports hash + OpenAI-compatible embedding backends, JSON+NPZ caches, and `.pt` interop hooks; SentenceTransformer-equivalent local backend and direct `.pt` tensor serialization parity remain)
   - Agentic IRCoT parity beyond current scaffold loop (LLM-driven reasoning behavior still pending)
   - Full API/WebSocket behavior parity for retrieval and streaming events
   - CLI deep parity with Python retrieval internals (full evaluator parity pending)
-  - LLM behavior parity (provider/env matrix, response cleanup parity, structured output robustness)
+  - LLM behavior parity (structured output robustness and remaining runtime parity details)
 - Not started:
   - TreeComm parity
   - YAML->JSON config migration
@@ -116,7 +134,7 @@ Exit criteria:
 - JSON config is the default in Kotlin runtime and CI.
 
 ### Phase 2: LLM Client + Prompt Engine
-Status: **In progress** (ChatModel-based client, response cleanup, JSON repair utility, and mock-server call-path test implemented; provider/env parity still pending)
+Status: **In progress** (ChatModel-based client, response cleanup, JSON repair utility, provider/env matrix parity, and mock-server call-path tests implemented; structured-output parity remains)
 - Port `LLMCompletionCall` behavior using LangChain4j:
   - env vars parity (`LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, `OPENAI_PROVIDER`, etc.)
   - OpenAI/Azure endpoint compatibility
@@ -153,14 +171,14 @@ Exit criteria:
 - Community + keyword node/edge structures match Python schema expectations.
 
 ### Phase 5: Retriever + Indexing Parity
-Status: **In progress** (baseline graph/chunk indexing + keyword retrieval implemented)
+Status: **In progress** (baseline graph/chunk indexing + keyword retrieval + retrieval prompt-template mode mapping implemented; type-filtered retrieval, path expansion, triple reranking, Lucene HNSW ANN retrieval, configurable embedding backends, Kotlin embedding cache persistence with NPZ artifacts, and `.pt` interop hooks are in place; full Python local-embedding and direct `.pt` serialization parity remain)
 - Port `DualFAISSRetriever` + `KTRetriever` retrieval pipeline:
   - Node/relation/triple/community indexing
   - Dual-path retrieval (triples + communities)
   - Type-filtered retrieval
   - Keyword search, path expansion, triple reranking
   - Chunk embedding retrieval + reranking
-- **Technical spike required**: Implement local ANN parity for FAISS using `hnswlib-jna` or `Lucene Vector Search` via LangChain4j. Ensure serialization format is compatible or documented if diverging.
+- Align embedding model + cache artifact format with Python retriever expectations (`retriever/faiss_cache_new/{dataset}/...`) or document/version intentional divergence.
 
 Exit criteria:
 - Retrieval result shape and scoring pipeline pass parity tests on demo fixtures.

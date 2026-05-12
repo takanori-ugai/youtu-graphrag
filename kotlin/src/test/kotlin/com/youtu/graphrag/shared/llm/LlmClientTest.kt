@@ -44,40 +44,11 @@ class LlmClientTest {
     @Test
     fun `factory openai client works against mock chat completions server`() {
         var requestBody = ""
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.executor = Executors.newSingleThreadExecutor()
-        server.createContext("/v1/chat/completions") { exchange ->
-            requestBody = exchange.requestBody.bufferedReader().readText()
-            val response =
-                """
-                {
-                  "id": "chatcmpl-test",
-                  "object": "chat.completion",
-                  "created": 1,
-                  "model": "test-model",
-                  "choices": [
-                    {
-                      "index": 0,
-                      "message": {
-                        "role": "assistant",
-                        "content": "mocked completion"
-                      },
-                      "finish_reason": "stop"
-                    }
-                  ],
-                  "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2
-                  }
-                }
-                """.trimIndent()
-            exchange.responseHeaders.add("Content-Type", "application/json")
-            exchange.sendResponseHeaders(200, response.toByteArray().size.toLong())
-            exchange.responseBody.use { body ->
-                body.write(response.toByteArray())
+        val server =
+            createMockServer("/v1/chat/completions") { exchange ->
+                requestBody = exchange.requestBody.bufferedReader().readText()
+                writeChatCompletionResponse(exchange, "mocked completion")
             }
-        }
         server.start()
 
         try {
@@ -102,6 +73,77 @@ class LlmClientTest {
             server.stop(0)
         }
     }
+
+    @Test
+    fun `factory uses openai provider by default when OPENAI_PROVIDER is missing`() {
+        var requestBody = ""
+        val server =
+            createMockServer("/v1/chat/completions") { exchange ->
+                requestBody = exchange.requestBody.bufferedReader().readText()
+                writeChatCompletionResponse(exchange, "default provider response")
+            }
+        server.start()
+
+        try {
+            val port = server.address.port
+            val client =
+                LlmClientFactory.fromEnvironment(
+                    env =
+                        mapOf(
+                            "LLM_API_KEY" to "test-key",
+                            "LLM_BASE_URL" to "http://127.0.0.1:$port/v1",
+                        ),
+                )
+
+            val output = client.complete("default provider prompt")
+
+            assertEquals("default provider response", output)
+            assertTrue(requestBody.contains("deepseek-chat"))
+            assertTrue(requestBody.contains("default provider prompt"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `factory azure provider uses deployment path api-version and api-key header`() {
+        var requestPath = ""
+        var requestQuery = ""
+        var apiKeyHeader = ""
+
+        val server =
+            createMockServer("/openai/deployments/deployment-x/chat/completions") { exchange ->
+                requestPath = exchange.requestURI.path
+                requestQuery = exchange.requestURI.query.orEmpty()
+                apiKeyHeader = exchange.requestHeaders.getFirst("api-key").orEmpty()
+                writeChatCompletionResponse(exchange, "azure response")
+            }
+        server.start()
+
+        try {
+            val port = server.address.port
+            val client =
+                LlmClientFactory.fromEnvironment(
+                    env =
+                        mapOf(
+                            "OPENAI_PROVIDER" to "azure",
+                            "AZURE_OPENAI_API_KEY" to "azure-key",
+                            "AZURE_OPENAI_ENDPOINT" to "http://127.0.0.1:$port",
+                            "AZURE_OPENAI_DEPLOYMENT" to "deployment-x",
+                            "API_VERSION" to "2025-01-01-preview",
+                        ),
+                )
+
+            val output = client.complete("azure prompt")
+
+            assertEquals("azure response", output)
+            assertEquals("/openai/deployments/deployment-x/chat/completions", requestPath)
+            assertTrue(requestQuery.contains("api-version=2025-01-01-preview"))
+            assertEquals("azure-key", apiKeyHeader)
+        } finally {
+            server.stop(0)
+        }
+    }
 }
 
 private class RecordingChatModel(
@@ -113,5 +155,50 @@ private class RecordingChatModel(
         val lastUserMessage = UserMessage.findLast(request.messages()).orElse(null)
         lastPrompt = lastUserMessage?.singleText()
         return ChatResponse.builder().aiMessage(AiMessage.from(response)).build()
+    }
+}
+
+private fun createMockServer(
+    path: String,
+    handler: (com.sun.net.httpserver.HttpExchange) -> Unit,
+): HttpServer {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.executor = Executors.newSingleThreadExecutor()
+    server.createContext(path, handler)
+    return server
+}
+
+private fun writeChatCompletionResponse(
+    exchange: com.sun.net.httpserver.HttpExchange,
+    content: String,
+) {
+    val response =
+        """
+        {
+          "id": "chatcmpl-test",
+          "object": "chat.completion",
+          "created": 1,
+          "model": "test-model",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "$content"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2
+          }
+        }
+        """.trimIndent()
+    exchange.responseHeaders.add("Content-Type", "application/json")
+    exchange.sendResponseHeaders(200, response.toByteArray().size.toLong())
+    exchange.responseBody.use { body ->
+        body.write(response.toByteArray())
     }
 }

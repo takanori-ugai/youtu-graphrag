@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.youtu.graphrag.server.api.contracts.DatasetInfo
 import com.youtu.graphrag.server.api.contracts.DatasetsResponse
+import com.youtu.graphrag.shared.ingest.BestEffortDocumentParser
+import com.youtu.graphrag.shared.ingest.DocumentParser
 import com.youtu.graphrag.shared.io.decodeBytesWithDetection
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
@@ -80,6 +82,7 @@ data class UploadResult(
 class DatasetFileService(
     private val rootDir: Path = Path.of("."),
     private val clock: Clock = Clock.systemDefaultZone(),
+    private val documentParser: DocumentParser = BestEffortDocumentParser(),
 ) {
     private val logger = KotlinLogging.logger {}
     private val mapper = ObjectMapper().registerKotlinModule()
@@ -90,6 +93,13 @@ class DatasetFileService(
     private val outputLogsDir = rootDir.resolve("output/logs")
     private val schemasDir = rootDir.resolve("schemas")
     private val faissCacheRoot = rootDir.resolve("retriever/faiss_cache_new")
+
+    private fun requireSafeDatasetName(datasetName: String): String {
+        require(Regex("^[A-Za-z0-9_-]+$").matches(datasetName)) {
+            "Invalid dataset name"
+        }
+        return datasetName
+    }
 
     fun ensureStartupDirectories() {
         listOf(dataUploadedDir, outputGraphsDir, outputChunksDir, outputLogsDir, schemasDir).forEach { it.createDirectories() }
@@ -152,8 +162,13 @@ class DatasetFileService(
                 }
 
                 ".pdf", ".docx", ".doc" -> {
-                    // Document parser parity will be added in a later phase.
-                    skippedFiles.add(safeFileName)
+                    val parsedText = documentParser.parseFile(filePath.toString(), extWithDot)
+                    if (parsedText.isBlank()) {
+                        skippedFiles.add(safeFileName)
+                    } else {
+                        corpusData.add(mapOf("title" to safeFileName, "text" to parsedText))
+                        processedCount += 1
+                    }
                 }
             }
         }
@@ -240,7 +255,8 @@ class DatasetFileService(
         schemaFileName: String,
         bytes: ByteArray,
     ): Map<String, Any> {
-        if (datasetName == "demo") {
+        val safeDatasetName = requireSafeDatasetName(datasetName)
+        if (safeDatasetName == "demo") {
             throw IllegalArgumentException("Cannot upload schema for demo dataset")
         }
 
@@ -261,31 +277,32 @@ class DatasetFileService(
         }
 
         schemasDir.createDirectories()
-        mapper.writerWithDefaultPrettyPrinter().writeValue(schemasDir.resolve("$datasetName.json").toFile(), parsed)
+        mapper.writerWithDefaultPrettyPrinter().writeValue(schemasDir.resolve("$safeDatasetName.json").toFile(), parsed)
 
         return mapOf(
             "success" to true,
             "message" to "Schema uploaded successfully",
-            "dataset_name" to datasetName,
+            "dataset_name" to safeDatasetName,
         )
     }
 
     fun deleteDataset(datasetName: String): Map<String, Any> {
-        if (datasetName == "demo") {
+        val safeDatasetName = requireSafeDatasetName(datasetName)
+        if (safeDatasetName == "demo") {
             throw IllegalArgumentException("Cannot delete demo dataset")
         }
 
         val deletedFiles = mutableListOf<String>()
 
-        deleteRecursivelyIfExists(dataUploadedDir.resolve(datasetName), deletedFiles)
-        deletePathIfExists(outputGraphsDir.resolve("${datasetName}_new.json"), deletedFiles)
-        deletePathIfExists(outputChunksDir.resolve("$datasetName.txt"), deletedFiles)
-        deletePathIfExists(schemasDir.resolve("$datasetName.json"), deletedFiles)
-        deleteRecursivelyIfExists(faissCacheRoot.resolve(datasetName), deletedFiles)
+        deleteRecursivelyIfExists(dataUploadedDir.resolve(safeDatasetName), deletedFiles)
+        deletePathIfExists(outputGraphsDir.resolve("${safeDatasetName}_new.json"), deletedFiles)
+        deletePathIfExists(outputChunksDir.resolve("$safeDatasetName.txt"), deletedFiles)
+        deletePathIfExists(schemasDir.resolve("$safeDatasetName.json"), deletedFiles)
+        deleteRecursivelyIfExists(faissCacheRoot.resolve(safeDatasetName), deletedFiles)
 
         return mapOf(
             "success" to true,
-            "message" to "Dataset '$datasetName' deleted successfully",
+            "message" to "Dataset '$safeDatasetName' deleted successfully",
             "deleted_files" to deletedFiles,
         )
     }
