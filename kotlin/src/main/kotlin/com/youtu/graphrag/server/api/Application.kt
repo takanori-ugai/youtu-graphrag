@@ -15,12 +15,14 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.http.content.staticFiles
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -33,7 +35,11 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import kotlinx.serialization.json.Json
+import java.nio.file.Path
 import java.time.Instant
+import kotlin.io.path.exists
+import kotlin.io.path.isDirectory
+import kotlin.io.path.isRegularFile
 
 private val logger = KotlinLogging.logger {}
 private val objectMapper = jacksonObjectMapper()
@@ -57,6 +63,10 @@ fun Application.youtuGraphRagModule() {
     val datasetFileService = DatasetFileService()
     datasetFileService.ensureStartupDirectories()
 
+    val frontendDir = resolveStaticDir("frontend")
+    val assetsDir = resolveStaticDir("assets")
+    val frontendIndex = frontendDir?.resolve("index.html")?.takeIf { it.exists() && it.isRegularFile() }
+
     install(ContentNegotiation) {
         json(
             Json {
@@ -77,13 +87,29 @@ fun Application.youtuGraphRagModule() {
     install(WebSockets)
 
     routing {
+        if (assetsDir != null) {
+            staticFiles("/assets", assetsDir.toFile())
+        } else {
+            logger.warn { "Static assets directory not found at ./assets or ../assets" }
+        }
+
+        if (frontendDir != null) {
+            staticFiles("/frontend", frontendDir.toFile())
+        } else {
+            logger.warn { "Frontend directory not found at ./frontend or ../frontend" }
+        }
+
         get("/") {
-            call.respond(
-                mapOf(
-                    "message" to "Youtu-GraphRAG Unified Interface is running!",
-                    "status" to "ok",
-                ),
-            )
+            if (frontendIndex != null) {
+                call.respondFile(frontendIndex.toFile())
+            } else {
+                call.respond(
+                    mapOf(
+                        "message" to "Youtu-GraphRAG Unified Interface is running!",
+                        "status" to "ok",
+                    ),
+                )
+            }
         }
 
         get("/api/status") {
@@ -97,7 +123,11 @@ fun Application.youtuGraphRagModule() {
         }
 
         webSocket("/ws/{client_id}") {
-            val clientId = call.parameters["client_id"] ?: "default"
+            val clientId = call.parameters["client_id"]
+            if (clientId.isNullOrBlank() || clientId == "default") {
+                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing or invalid client_id"))
+                return@webSocket
+            }
             wsManager.connect(clientId, this)
 
             try {
@@ -144,16 +174,21 @@ fun Application.youtuGraphRagModule() {
                     ),
                 )
             } catch (error: IllegalArgumentException) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid upload request")))
+                logger.warn(error) { "Invalid upload request" }
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid upload request"))
             } catch (error: Exception) {
                 logger.error(error) { "Upload failed" }
-                call.respond(HttpStatusCode.InternalServerError, mapOf("detail" to (error.message ?: "Upload failed")))
+                call.respond(HttpStatusCode.InternalServerError, mapOf("detail" to "Upload failed"))
             }
         }
 
         post("/api/construct-graph") {
             val request = call.receive<GraphConstructionRequest>()
-            val clientId = call.request.queryParameters["client_id"] ?: "default"
+            val clientId = call.request.queryParameters["client_id"]
+            if (clientId.isNullOrBlank() || clientId == "default") {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Missing or invalid client_id query parameter"))
+                return@post
+            }
 
             sendProgressUpdate(
                 wsManager = wsManager,
@@ -187,21 +222,22 @@ fun Application.youtuGraphRagModule() {
                     ),
                 )
             } catch (error: DatasetNotFoundException) {
+                logger.warn(error) { "Construction failed: Dataset not found" }
                 sendProgressUpdate(
                     wsManager = wsManager,
                     clientId = clientId,
                     stage = "construction",
                     progress = 0,
-                    message = "Construction failed: ${error.message}",
+                    message = "Construction failed: Dataset not found",
                 )
                 sendStageEvent(
                     wsManager = wsManager,
                     clientId = clientId,
                     type = "error",
                     stage = "construction",
-                    message = "Construction failed: ${error.message}",
+                    message = "Construction failed: Dataset not found",
                 )
-                call.respond(HttpStatusCode.NotFound, mapOf("detail" to (error.message ?: "Dataset not found")))
+                call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Dataset not found"))
             } catch (error: Exception) {
                 logger.error(error) { "Graph construction failed for dataset '${request.datasetName}'" }
                 sendProgressUpdate(
@@ -209,25 +245,29 @@ fun Application.youtuGraphRagModule() {
                     clientId = clientId,
                     stage = "construction",
                     progress = 0,
-                    message = "Construction failed: ${error.message}",
+                    message = "Construction failed: Internal error",
                 )
                 sendStageEvent(
                     wsManager = wsManager,
                     clientId = clientId,
                     type = "error",
                     stage = "construction",
-                    message = "Construction failed: ${error.message}",
+                    message = "Construction failed: Internal error",
                 )
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf("detail" to (error.message ?: "Graph construction failed")),
+                    mapOf("detail" to "Graph construction failed"),
                 )
             }
         }
 
         post("/api/ask-question") {
             val request = call.receive<QuestionRequest>()
-            val clientId = call.request.queryParameters["client_id"] ?: "default"
+            val clientId = call.request.queryParameters["client_id"]
+            if (clientId.isNullOrBlank() || clientId == "default") {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Missing or invalid client_id query parameter"))
+                return@post
+            }
 
             sendProgressUpdate(
                 wsManager = wsManager,
@@ -293,21 +333,22 @@ fun Application.youtuGraphRagModule() {
 
                 call.respond(response)
             } catch (error: GraphArtifactNotFoundException) {
+                logger.warn(error) { "Question answering failed: Graph artifacts not found" }
                 sendProgressUpdate(
                     wsManager = wsManager,
                     clientId = clientId,
                     stage = "retrieval",
                     progress = 0,
-                    message = "Question answering failed: ${error.message}",
+                    message = "Question answering failed: Graph not found",
                 )
                 sendStageEvent(
                     wsManager = wsManager,
                     clientId = clientId,
                     type = "error",
                     stage = "retrieval",
-                    message = "Question answering failed: ${error.message}",
+                    message = "Question answering failed: Graph not found",
                 )
-                call.respond(HttpStatusCode.NotFound, mapOf("detail" to (error.message ?: "Graph not found")))
+                call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Graph not found"))
             } catch (error: Exception) {
                 logger.error(error) { "Question answering failed for dataset '${request.datasetName}'" }
                 sendProgressUpdate(
@@ -315,18 +356,18 @@ fun Application.youtuGraphRagModule() {
                     clientId = clientId,
                     stage = "retrieval",
                     progress = 0,
-                    message = "Question answering failed: ${error.message}",
+                    message = "Question answering failed: Internal error",
                 )
                 sendStageEvent(
                     wsManager = wsManager,
                     clientId = clientId,
                     type = "error",
                     stage = "retrieval",
-                    message = "Question answering failed: ${error.message}",
+                    message = "Question answering failed: Internal error",
                 )
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf("detail" to (error.message ?: "Question answering failed")),
+                    mapOf("detail" to "Question answering failed"),
                 )
             }
         }
@@ -369,12 +410,13 @@ fun Application.youtuGraphRagModule() {
             try {
                 call.respond(datasetFileService.saveSchema(datasetName, safeSchemaFileName, safeSchemaBytes))
             } catch (error: IllegalArgumentException) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid schema")))
+                logger.warn(error) { "Invalid schema for '$datasetName'" }
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid schema"))
             } catch (error: Exception) {
                 logger.error(error) { "Schema upload failed for '$datasetName'" }
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf("detail" to (error.message ?: "Failed to upload schema")),
+                    mapOf("detail" to "Failed to upload schema"),
                 )
             }
         }
@@ -390,12 +432,13 @@ fun Application.youtuGraphRagModule() {
             try {
                 call.respond(datasetFileService.deleteDataset(datasetName))
             } catch (error: IllegalArgumentException) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid dataset")))
+                logger.warn(error) { "Invalid dataset deletion request for '$datasetName'" }
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid dataset"))
             } catch (error: Exception) {
                 logger.error(error) { "Delete dataset failed for '$datasetName'" }
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf("detail" to (error.message ?: "Failed to delete dataset")),
+                    mapOf("detail" to "Failed to delete dataset"),
                 )
             }
         }
@@ -407,7 +450,11 @@ fun Application.youtuGraphRagModule() {
                         HttpStatusCode.BadRequest,
                         BaseOperationResponse(success = false, message = "Missing dataset_name path parameter"),
                     )
-            val clientId = call.request.queryParameters["client_id"] ?: "default"
+            val clientId = call.request.queryParameters["client_id"]
+            if (clientId.isNullOrBlank() || clientId == "default") {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Missing or invalid client_id query parameter"))
+                return@post
+            }
 
             sendProgressUpdate(
                 wsManager = wsManager,
@@ -451,21 +498,22 @@ fun Application.youtuGraphRagModule() {
                     ),
                 )
             } catch (error: DatasetNotFoundException) {
+                logger.warn(error) { "Reconstruction failed: Dataset '$datasetName' not found" }
                 sendProgressUpdate(
                     wsManager = wsManager,
                     clientId = clientId,
                     stage = "reconstruction",
                     progress = 0,
-                    message = "Reconstruction failed: ${error.message}",
+                    message = "Reconstruction failed: Dataset not found",
                 )
                 sendStageEvent(
                     wsManager = wsManager,
                     clientId = clientId,
                     type = "error",
                     stage = "reconstruction",
-                    message = "Reconstruction failed: ${error.message}",
+                    message = "Reconstruction failed: Dataset not found",
                 )
-                call.respond(HttpStatusCode.NotFound, mapOf("detail" to (error.message ?: "Dataset not found")))
+                call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Dataset not found"))
             } catch (error: Exception) {
                 logger.error(error) { "Reconstruction failed for '$datasetName'" }
                 sendProgressUpdate(
@@ -473,18 +521,18 @@ fun Application.youtuGraphRagModule() {
                     clientId = clientId,
                     stage = "reconstruction",
                     progress = 0,
-                    message = "Reconstruction failed: ${error.message}",
+                    message = "Reconstruction failed: Internal error",
                 )
                 sendStageEvent(
                     wsManager = wsManager,
                     clientId = clientId,
                     type = "error",
                     stage = "reconstruction",
-                    message = "Reconstruction failed: ${error.message}",
+                    message = "Reconstruction failed: Internal error",
                 )
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf("detail" to (error.message ?: "Reconstruction failed")),
+                    mapOf("detail" to "Reconstruction failed"),
                 )
             }
         }
@@ -503,6 +551,16 @@ fun Application.youtuGraphRagModule() {
     }
 
     logger.info { "Kotlin API initialized at ${Instant.now()}" }
+}
+
+private fun resolveStaticDir(dirName: String): Path? {
+    val candidates =
+        listOf(
+            Path.of(dirName),
+            Path.of("..", dirName),
+        )
+
+    return candidates.firstOrNull { candidate -> candidate.exists() && candidate.isDirectory() }
 }
 
 suspend fun sendProgressUpdate(

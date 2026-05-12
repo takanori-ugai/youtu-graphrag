@@ -76,6 +76,75 @@ class KTRetriever(
         )
     }
 
+    fun buildKnowledgeContext(
+        triples: List<String>,
+        chunks: List<String>,
+        tripleLimit: Int = 20,
+        chunkLimit: Int = 10,
+    ): String {
+        val tripleSection = triples.take(tripleLimit).joinToString("\n")
+        val chunkSection = chunks.take(chunkLimit).joinToString("\n")
+        return buildString {
+            append("=== Triples ===\n")
+            append(tripleSection)
+            append("\n=== Chunks ===\n")
+            append(chunkSection)
+        }
+    }
+
+    fun generatePrompt(
+        question: String,
+        context: String,
+    ): String =
+        runCatching {
+            config.getPromptFormatted(
+                category = "retrieval",
+                promptType = "general",
+                variables =
+                    mapOf(
+                        "question" to question,
+                        "context" to context,
+                    ),
+            )
+        }.getOrElse {
+            """
+            Question: $question
+
+            Knowledge Context:
+            $context
+
+            Answer (be specific and direct):
+            """.trimIndent()
+        }
+
+    fun generateIrcotPrompt(
+        currentQuery: String,
+        context: String,
+        previousThoughts: String,
+        step: Int,
+    ): String =
+        runCatching {
+            config.getPromptFormatted(
+                category = "retrieval",
+                promptType = "ircot",
+                variables =
+                    mapOf(
+                        "current_query" to currentQuery,
+                        "context" to context,
+                        "previous_thoughts" to previousThoughts,
+                        "step" to step,
+                    ),
+            )
+        }.getOrElse {
+            """
+            Current Question: $currentQuery
+            Available Knowledge Context:
+            $context
+            Previous Thoughts: $previousThoughts
+            Step $step
+            """.trimIndent()
+        }
+
     private fun loadTriples(graphFile: Path): List<String> {
         if (!graphFile.exists()) {
             return emptyList()

@@ -4,17 +4,23 @@ import com.youtu.graphrag.server.api.contracts.QuestionResponse
 import com.youtu.graphrag.server.api.contracts.ReasoningStep
 import com.youtu.graphrag.shared.config.ConfigManager
 import com.youtu.graphrag.shared.decomposer.GraphQ
+import com.youtu.graphrag.shared.llm.LlmClient
+import com.youtu.graphrag.shared.llm.LlmClientFactory
 import com.youtu.graphrag.shared.retriever.KTRetriever
 import io.github.oshai.kotlinlogging.KotlinLogging
-import java.nio.file.Path
-import kotlin.io.path.exists
-import kotlin.system.measureTimeMillis
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.nio.file.Path
+import kotlin.io.path.exists
+import kotlin.system.measureTimeMillis
 
 class GraphArtifactNotFoundException(
     message: String,
@@ -25,25 +31,44 @@ data class QaStageUpdate(
     val payload: Map<String, Any?> = emptyMap(),
 )
 
+private data class SubQuestionRetrieval(
+    val index: Int,
+    val subQuestionText: String,
+    val triples: List<String>,
+    val chunkIds: List<String>,
+    val chunkContents: Map<String, String>,
+    val processingTime: Double,
+)
+
 class QuestionAnsweringService(
     private val config: ConfigManager,
     private val rootDir: Path = Path.of("."),
+    private val llmClient: LlmClient = LlmClientFactory.fromEnvironment(),
 ) {
     private val logger = KotlinLogging.logger {}
+
+    private fun requireSafeDatasetName(datasetName: String): String {
+        require(Regex("^[A-Za-z0-9_-]+$").matches(datasetName)) {
+            "Invalid dataset name"
+        }
+        return datasetName
+    }
 
     suspend fun answerQuestion(
         datasetName: String,
         question: String,
         onQaUpdate: suspend (QaStageUpdate) -> Unit = {},
     ): QuestionResponse {
-        val graphPath = resolveGraphPathWithDemoFallback(datasetName)
-            ?: throw GraphArtifactNotFoundException("Graph not found. Please construct graph first.")
-        val schemaPath = resolveSchemaPath(datasetName)
+        val safeDatasetName = requireSafeDatasetName(datasetName)
+        val graphPath =
+            resolveGraphPathWithDemoFallback(safeDatasetName)
+                ?: throw GraphArtifactNotFoundException("Graph not found. Please construct graph first.")
+        val schemaPath = resolveSchemaPath(safeDatasetName)
 
-        val graphq = GraphQ(datasetName, config)
+        val graphq = GraphQ(safeDatasetName, config, llmClient = llmClient)
         val ktRetriever =
             KTRetriever(
-                datasetName = datasetName,
+                datasetName = safeDatasetName,
                 graphPath = graphPath.toString(),
                 recallPaths = config.retrieval.recallPaths,
                 schemaPath = schemaPath.toString(),
@@ -56,9 +81,11 @@ class QuestionAnsweringService(
         ktRetriever.buildIndices()
 
         val decomposition = graphq.decompose(question, schemaPath.toString())
-        val subQuestions = parseSubQuestions(decomposition["sub_questions"])
-            .ifEmpty { listOf(mapOf("sub-question" to question)) }
+        val subQuestions =
+            parseSubQuestions(decomposition["sub_questions"])
+                .ifEmpty { listOf(mapOf("sub-question" to question)) }
         val involvedTypes = parseInvolvedTypes(decomposition["involved_types"])
+        val parallelSubquestions = shouldProcessSubquestionsInParallel(subQuestions.size)
 
         onQaUpdate(
             QaStageUpdate(
@@ -67,6 +94,7 @@ class QuestionAnsweringService(
                     mapOf(
                         "sub_questions_count" to subQuestions.size,
                         "sub_questions" to subQuestions.map { it["sub-question"].orEmpty() }.take(5),
+                        "parallel_subquestions" to parallelSubquestions,
                     ),
             ),
         )
@@ -75,39 +103,35 @@ class QuestionAnsweringService(
         val chunkById = linkedMapOf<String, String>()
         val reasoningSteps = mutableListOf<ReasoningStep>()
 
-        subQuestions.forEachIndexed { index, subQuestion ->
-            val subQuestionText = subQuestion["sub-question"].orEmpty().ifBlank { question }
-            val retrievalResultsHolder = mutableMapOf<String, Any>()
-            val elapsedMs =
-                measureTimeMillis {
-                    retrievalResultsHolder.putAll(
-                        ktRetriever.processRetrievalResults(
-                            question = subQuestionText,
-                            involvedTypes = involvedTypes,
-                        ),
-                    )
-                }
-
-            mergeRetrieval(
-                retrievalResults = retrievalResultsHolder,
-                allTriples = allTriples,
-                chunkById = chunkById,
+        val subQuestionRetrievals =
+            retrieveSubQuestionResults(
+                subQuestions = subQuestions,
+                originalQuestion = question,
+                involvedTypes = involvedTypes,
+                ktRetriever = ktRetriever,
+                parallelSubquestions = parallelSubquestions,
             )
 
-            val triples = parseStringList(retrievalResultsHolder["triples"])
-            val chunkIds = parseStringList(retrievalResultsHolder["chunk_ids"])
-            val chunkContents = parseChunkContentMap(retrievalResultsHolder["chunk_contents"])
-            val chunkPreview = chunkIds.mapNotNull { chunkContents[it] }.take(3)
+        subQuestionRetrievals.forEach { retrieval ->
+            retrieval.triples.forEach { triple -> allTriples.add(triple) }
+            retrieval.chunkIds.forEach { chunkId ->
+                val chunkContent = retrieval.chunkContents[chunkId]
+                if (chunkContent != null) {
+                    chunkById[chunkId] = chunkContent
+                }
+            }
+
+            val chunkPreview = retrieval.chunkIds.mapNotNull { retrieval.chunkContents[it] }.take(3)
 
             val step =
                 ReasoningStep(
                     type = "sub_question",
-                    question = subQuestionText,
-                    triples = triples.take(10),
-                    triplesCount = triples.size,
+                    question = retrieval.subQuestionText,
+                    triples = retrieval.triples.take(10),
+                    triplesCount = retrieval.triples.size,
                     chunkContents = chunkPreview,
-                    chunksCount = chunkIds.size,
-                    processingTime = elapsedMs / 1000.0,
+                    chunksCount = retrieval.chunkIds.size,
+                    processingTime = retrieval.processingTime,
                 )
             reasoningSteps.add(step)
 
@@ -116,10 +140,10 @@ class QuestionAnsweringService(
                     stage = "sub_question",
                     payload =
                         mapOf(
-                            "index" to (index + 1),
+                            "index" to (retrieval.index + 1),
                             "total" to subQuestions.size,
-                            "question" to subQuestionText,
-                            "triples_preview" to triples.distinct().take(5),
+                            "question" to retrieval.subQuestionText,
+                            "triples_preview" to retrieval.triples.distinct().take(5),
                             "triples_count" to step.triplesCount,
                             "chunks_count" to step.chunksCount,
                             "processing_time" to step.processingTime,
@@ -128,7 +152,14 @@ class QuestionAnsweringService(
             )
         }
 
-        var finalAnswer = synthesizeAnswer(allTriples.toList(), chunkById.values.toList())
+        val initialTriples = allTriples.toList()
+        val initialChunks = chunkById.values.toList()
+        val initialContext = ktRetriever.buildKnowledgeContext(initialTriples, initialChunks)
+        var finalAnswer =
+            generateAnswerWithFallback(
+                prompt = ktRetriever.generatePrompt(question, initialContext),
+                fallback = synthesizeAnswer(initialTriples, initialChunks),
+            )
 
         if (shouldRunIrcot()) {
             onQaUpdate(
@@ -140,7 +171,9 @@ class QuestionAnsweringService(
 
             val thoughts = mutableListOf<String>()
             var currentQuery = question
-            val maxSteps = config.retrieval.agent.maxSteps.coerceAtLeast(1)
+            val maxSteps =
+                config.retrieval.agent.maxSteps
+                    .coerceAtLeast(1)
 
             for (stepIndex in 1..maxSteps) {
                 var thought = ""
@@ -148,28 +181,30 @@ class QuestionAnsweringService(
                 val chunksSnapshotBefore = chunkById.values.toList()
                 val stepElapsedMs =
                     measureTimeMillis {
-                        val candidateAnswer = synthesizeAnswer(triplesSnapshotBefore, chunksSnapshotBefore)
-                        val hasContext = triplesSnapshotBefore.isNotEmpty() || chunksSnapshotBefore.isNotEmpty()
-
-                        if (hasContext || stepIndex == maxSteps) {
-                            thought = "So the answer is: $candidateAnswer"
-                            finalAnswer = candidateAnswer
-                        } else {
-                            val newQuery = buildFollowUpQuery(question, currentQuery, thoughts)
-                            thought = "The new query is: $newQuery"
-                            currentQuery = newQuery
-
-                            val additionalRetrieval =
-                                ktRetriever.processRetrievalResults(
-                                    question = newQuery,
-                                    involvedTypes = involvedTypes,
-                                )
-                            mergeRetrieval(
-                                retrievalResults = additionalRetrieval,
-                                allTriples = allTriples,
-                                chunkById = chunkById,
+                        val loopContext =
+                            ktRetriever.buildKnowledgeContext(
+                                triples = triplesSnapshotBefore,
+                                chunks = chunksSnapshotBefore,
                             )
-                        }
+                        val previousThoughts = thoughts.joinToString(" | ").ifBlank { "None" }
+                        val ircotPrompt =
+                            ktRetriever.generateIrcotPrompt(
+                                currentQuery = currentQuery,
+                                context = loopContext,
+                                previousThoughts = previousThoughts,
+                                step = stepIndex,
+                            )
+                        val heuristicFallback =
+                            if (triplesSnapshotBefore.isNotEmpty() || chunksSnapshotBefore.isNotEmpty()) {
+                                "So the answer is: ${synthesizeAnswer(triplesSnapshotBefore, chunksSnapshotBefore)}"
+                            } else {
+                                "The new query is: ${buildFollowUpQuery(question, currentQuery, thoughts)}"
+                            }
+                        thought =
+                            llmClient
+                                .complete(ircotPrompt)
+                                .trim()
+                                .ifBlank { heuristicFallback }
                     }
 
                 thoughts.add(thought)
@@ -203,14 +238,38 @@ class QuestionAnsweringService(
                     ),
                 )
 
-                if (thought.startsWith("So the answer is:")) {
+                extractFinalAnswer(thought)?.let { answer ->
+                    finalAnswer = answer
                     break
                 }
+
+                val newQuery = extractNewQuery(thought)
+                if (newQuery.isNullOrBlank() || newQuery == currentQuery) {
+                    break
+                }
+
+                currentQuery = newQuery
+                val additionalRetrieval =
+                    ktRetriever.processRetrievalResults(
+                        question = newQuery,
+                        involvedTypes = involvedTypes,
+                    )
+                mergeRetrieval(
+                    retrievalResults = additionalRetrieval,
+                    allTriples = allTriples,
+                    chunkById = chunkById,
+                )
             }
         }
 
         val finalTriples = allTriples.take(20)
         val finalChunks = chunkById.values.take(10)
+        val finalContext = ktRetriever.buildKnowledgeContext(finalTriples, finalChunks)
+        finalAnswer =
+            generateAnswerWithFallback(
+                prompt = ktRetriever.generatePrompt(question, finalContext),
+                fallback = finalAnswer.ifBlank { synthesizeAnswer(finalTriples, finalChunks) },
+            )
 
         logger.info {
             "Answered question for dataset '$datasetName' with ${finalTriples.size} triples and ${finalChunks.size} chunks"
@@ -232,8 +291,124 @@ class QuestionAnsweringService(
         )
     }
 
-    private fun shouldRunIrcot(): Boolean {
-        return config.triggers.mode == "agent" && config.retrieval.agent.enableIrcot
+    private fun shouldRunIrcot(): Boolean = config.triggers.mode == "agent" && config.retrieval.agent.enableIrcot
+
+    private fun generateAnswerWithFallback(
+        prompt: String,
+        fallback: String,
+    ): String {
+        val response = llmClient.complete(prompt).trim()
+        return response.ifBlank { fallback }
+    }
+
+    private fun extractFinalAnswer(thought: String): String? {
+        val marker = "So the answer is:"
+        val index = thought.indexOf(marker, ignoreCase = true)
+        if (index < 0) {
+            return null
+        }
+        return thought.substring(index + marker.length).trim().ifBlank { null }
+    }
+
+    private fun extractNewQuery(thought: String): String? {
+        val marker = "The new query is:"
+        val index = thought.indexOf(marker, ignoreCase = true)
+        if (index < 0) {
+            return null
+        }
+        return thought
+            .substring(index + marker.length)
+            .lineSequence()
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+            .ifBlank { null }
+    }
+
+    private fun shouldProcessSubquestionsInParallel(subQuestionCount: Int): Boolean =
+        subQuestionCount > 1 && config.retrieval.agent.enableParallelSubquestions
+
+    private suspend fun retrieveSubQuestionResults(
+        subQuestions: List<Map<String, String>>,
+        originalQuestion: String,
+        involvedTypes: Map<String, List<String>>,
+        ktRetriever: KTRetriever,
+        parallelSubquestions: Boolean,
+    ): List<SubQuestionRetrieval> {
+        if (!parallelSubquestions) {
+            return subQuestions.mapIndexed { index, subQuestion ->
+                retrieveSingleSubQuestion(
+                    index = index,
+                    subQuestion = subQuestion,
+                    originalQuestion = originalQuestion,
+                    involvedTypes = involvedTypes,
+                    ktRetriever = ktRetriever,
+                )
+            }
+        }
+
+        return coroutineScope {
+            subQuestions
+                .mapIndexed { index, subQuestion ->
+                    async(Dispatchers.Default) {
+                        retrieveSingleSubQuestion(
+                            index = index,
+                            subQuestion = subQuestion,
+                            originalQuestion = originalQuestion,
+                            involvedTypes = involvedTypes,
+                            ktRetriever = ktRetriever,
+                        )
+                    }
+                }.awaitAll()
+                .sortedBy { retrieval -> retrieval.index }
+        }
+    }
+
+    private fun retrieveSingleSubQuestion(
+        index: Int,
+        subQuestion: Map<String, String>,
+        originalQuestion: String,
+        involvedTypes: Map<String, List<String>>,
+        ktRetriever: KTRetriever,
+    ): SubQuestionRetrieval {
+        val subQuestionText = subQuestion["sub-question"].orEmpty().ifBlank { originalQuestion }
+        val retrievalResultsHolder = mutableMapOf<String, Any>()
+        val elapsedMs =
+            measureTimeMillis {
+                retrievalResultsHolder.putAll(
+                    ktRetriever.processRetrievalResults(
+                        question = subQuestionText,
+                        involvedTypes = involvedTypes,
+                    ),
+                )
+            }
+
+        return SubQuestionRetrieval(
+            index = index,
+            subQuestionText = subQuestionText,
+            triples = parseStringList(retrievalResultsHolder["triples"]),
+            chunkIds = parseStringList(retrievalResultsHolder["chunk_ids"]),
+            chunkContents = parseChunkContentMap(retrievalResultsHolder["chunk_contents"]),
+            processingTime = elapsedMs / 1000.0,
+        )
+    }
+
+    private fun mergeRetrieval(
+        retrievalResults: Map<String, Any>,
+        allTriples: MutableSet<String>,
+        chunkById: MutableMap<String, String>,
+    ) {
+        val triples = parseStringList(retrievalResults["triples"])
+        val chunkIds = parseStringList(retrievalResults["chunk_ids"])
+        val chunkContents = parseChunkContentMap(retrievalResults["chunk_contents"])
+
+        triples.forEach { triple -> allTriples.add(triple) }
+        chunkIds.forEach { chunkId ->
+            val content = chunkContents[chunkId]
+            if (content != null) {
+                chunkById[chunkId] = content
+            }
+        }
     }
 
     private fun synthesizeAnswer(
@@ -456,24 +631,6 @@ class QuestionAnsweringService(
             Triple(rawParts[0], rawParts[1], rawParts[2])
         } else {
             null
-        }
-    }
-
-    private fun mergeRetrieval(
-        retrievalResults: Map<String, Any>,
-        allTriples: MutableSet<String>,
-        chunkById: MutableMap<String, String>,
-    ) {
-        val triples = parseStringList(retrievalResults["triples"])
-        val chunkIds = parseStringList(retrievalResults["chunk_ids"])
-        val chunkContents = parseChunkContentMap(retrievalResults["chunk_contents"])
-
-        triples.forEach { allTriples.add(it) }
-        chunkIds.forEach { chunkId ->
-            val content = chunkContents[chunkId]
-            if (content != null) {
-                chunkById[chunkId] = content
-            }
         }
     }
 

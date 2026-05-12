@@ -35,6 +35,7 @@ The Kotlin version is considered compliant when all of the following pass:
 - API contract DTOs and Ktor server routes exist; current endpoint status:
   - implemented: `GET /`, `GET /api/status`, `POST /api/upload`, `GET /api/datasets`, `POST /api/datasets/{dataset_name}/schema`, `DELETE /api/datasets/{dataset_name}`, `POST /api/construct-graph`, `POST /api/ask-question`, `POST /api/datasets/{dataset_name}/reconstruct`, `GET /api/graph/{dataset_name}`
   - partially compliant: `POST /api/ask-question` and reconstruction/construction flows now emit WebSocket updates, but payload/detail parity with Python is still incomplete.
+  - implemented: static frontend parity for `GET /` (serves `frontend/index.html` when present) and static mounts for `/frontend` and `/assets` with fallback path resolution (`./` then `../`).
 - Construction path now writes:
   - `output/graphs/{dataset}_new.json`
   - `output/chunks/{dataset}.txt`
@@ -49,15 +50,23 @@ The Kotlin version is considered compliant when all of the following pass:
   - Initial graph construction output pipeline (initial Phase 3 slice)
   - Reconstruction route + progress/complete/error WS signaling
   - Initial QA route implementation with retrieval results and QA WS signaling
+  - Static frontend/assets serving parity in Ktor (`/`, `/frontend`, `/assets`)
+  - CLI now executes dataset workflows (constructor cache cleanup/build + retrieval over QA files with JSON result logs)
+  - Shared QA pipeline now supports multi-subquestion decomposition and optional parallel sub-question retrieval
+  - CLI retrieval now reuses `QuestionAnsweringService` outputs (reasoning steps, visualization payload snapshot, simple eval summary)
+  - Initial LLM integration using LangChain4j `ChatModel` (OpenAI/Ollama factory + QA prompt/answer path wiring)
+  - LLM output cleanup + JSON repair utility (`LlmOutputParser`) and GraphQ LLM decomposition parsing/fallback wiring
+  - OpenAI-compatible `ChatModel` call-path integration test with local mock `/v1/chat/completions` server
+  - Focused and full Gradle test suites passing after LLM/decomposition parity updates (`./gradlew --no-daemon test`)
   - Test scaffolding for parity helpers and services
 - In progress:
   - Full constructor parity with Python extraction pipeline and schema evolution
   - Retriever/indexing parity beyond baseline keyword matching
-  - Agentic IRCoT parity beyond current scaffold loop
+  - Agentic IRCoT parity beyond current scaffold loop (LLM-driven reasoning behavior still pending)
   - Full API/WebSocket behavior parity for retrieval and streaming events
-  - CLI execution parity beyond argument/config bootstrap
+  - CLI deep parity with Python retrieval internals (full evaluator parity pending)
+  - LLM behavior parity (provider/env matrix, response cleanup parity, structured output robustness)
 - Not started:
-  - LLM client parity
   - TreeComm parity
   - YAML->JSON config migration
 
@@ -107,7 +116,7 @@ Exit criteria:
 - JSON config is the default in Kotlin runtime and CI.
 
 ### Phase 2: LLM Client + Prompt Engine
-Status: **Not started**
+Status: **In progress** (ChatModel-based client, response cleanup, JSON repair utility, and mock-server call-path test implemented; provider/env parity still pending)
 - Port `LLMCompletionCall` behavior using LangChain4j:
   - env vars parity (`LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, `OPENAI_PROVIDER`, etc.)
   - OpenAI/Azure endpoint compatibility
@@ -157,7 +166,7 @@ Exit criteria:
 - Retrieval result shape and scoring pipeline pass parity tests on demo fixtures.
 
 ### Phase 6: Agentic Decomposer + IRCoT Loop
-Status: **In progress** (agent-mode iterative loop scaffold implemented)
+Status: **In progress** (iterative loop + multi-subquestion/parallel path implemented; GraphQ now uses LLM-based decomposition with robust parse fallback, IRCoT behavior parity still pending)
 - Port `GraphQ.decompose`.
 - Port no-agent and agent flows from `main.py` / `backend.py`:
   - Sub-question decomposition
@@ -173,22 +182,22 @@ Status: **In progress** (core routes active; WS events partially aligned)
 - Implement Ktor endpoints matching Python:
   - `POST /api/upload`, `POST /api/construct-graph`, `POST /api/ask-question`, etc.
   - Preserve `qa_update`, `progress`, `qa_complete` WebSocket event shapes.
-- Serve `frontend/` and `assets/` static content.
+- Serve `frontend/` and `assets/` static content. **Completed in Kotlin route layer.**
 
 Exit criteria:
 - Existing frontend works unmodified against Kotlin backend.
 
 ### Phase 8: CLI Parity
-Status: **In progress** (arguments/config bootstrap done; workflow parity pending)
+Status: **In progress** (constructor/retriever workflows implemented; deep retrieval parity pending)
 - Implement Picocli CLI args and behavior matching `main.py`:
   - `--config`, `--datasets`, `--override`
-- Support constructor-only, retriever-only, and combined workflows.
+- Support constructor-only, retriever-only, and combined workflows. **Implemented in Kotlin CLI pipeline.**
 
 Exit criteria:
 - CLI command matrix works with Kotlin entrypoint.
 
 ### Phase 9: Verification and Compliance Gates
-Status: **In progress** (unit tests in place; parity regression suite pending)
+Status: **In progress** (unit/integration tests passing in Kotlin; Python-vs-Kotlin parity regression suite still pending)
 - Contract tests for API/WS.
 - Snapshot tests for graph/chunk outputs.
 - Parity tests (Python-vs-Kotlin) on `demo` dataset.

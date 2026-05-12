@@ -42,17 +42,25 @@ class GraphConstructionService(
     private val cacheDir = resolveConfiguredPath(config.retrieval.cacheDir)
     private val schemasDir = rootDir.resolve("schemas")
 
+    private fun requireSafeDatasetName(datasetName: String): String {
+        require(Regex("^[A-Za-z0-9_-]+$").matches(datasetName)) {
+            "Invalid dataset name"
+        }
+        return datasetName
+    }
+
     fun constructGraph(datasetName: String): GraphConstructionResult {
-        clearCacheFiles(datasetName)
+        val safeDatasetName = requireSafeDatasetName(datasetName)
+        clearCacheFiles(safeDatasetName)
 
         val corpusPath =
-            resolveCorpusPathWithDemoFallback(datasetName)
+            resolveCorpusPathWithDemoFallback(safeDatasetName)
                 ?: throw DatasetNotFoundException("Dataset not found")
-        val schemaPath = resolveSchemaPath(datasetName)
+        val schemaPath = resolveSchemaPath(safeDatasetName)
 
         val builder =
             KTBuilder(
-                datasetName = datasetName,
+                datasetName = safeDatasetName,
                 schemaPath = schemaPath.toString(),
                 mode = config.construction.mode,
                 config = config,
@@ -60,7 +68,7 @@ class GraphConstructionService(
             )
 
         builder.buildKnowledgeGraph(corpusPath.toString())
-        val visualization = loadGraphVisualization(datasetName) ?: defaultGraphVisualization()
+        val visualization = loadGraphVisualization(safeDatasetName) ?: defaultGraphVisualization()
 
         return GraphConstructionResult(
             success = true,
@@ -70,16 +78,17 @@ class GraphConstructionService(
     }
 
     fun reconstructGraph(datasetName: String): GraphConstructionResult {
+        val safeDatasetName = requireSafeDatasetName(datasetName)
         val corpusPath =
-            resolveCorpusPathForReconstruct(datasetName)
+            resolveCorpusPathForReconstruct(safeDatasetName)
                 ?: throw DatasetNotFoundException("Dataset not found")
 
-        clearCacheFiles(datasetName)
-        val schemaPath = resolveSchemaPath(datasetName)
+        clearCacheFiles(safeDatasetName)
+        val schemaPath = resolveSchemaPath(safeDatasetName)
 
         val builder =
             KTBuilder(
-                datasetName = datasetName,
+                datasetName = safeDatasetName,
                 schemaPath = schemaPath.toString(),
                 mode = config.construction.mode,
                 config = config,
@@ -87,7 +96,7 @@ class GraphConstructionService(
             )
 
         builder.buildKnowledgeGraph(corpusPath.toString())
-        val visualization = loadGraphVisualization(datasetName) ?: defaultGraphVisualization()
+        val visualization = loadGraphVisualization(safeDatasetName) ?: defaultGraphVisualization()
 
         return GraphConstructionResult(
             success = true,
@@ -97,7 +106,8 @@ class GraphConstructionService(
     }
 
     fun loadGraphVisualization(datasetName: String): JsonObject? {
-        val graphFile = graphsDir.resolve("${datasetName}_new.json")
+        val safeDatasetName = requireSafeDatasetName(datasetName)
+        val graphFile = graphsDir.resolve("${safeDatasetName}_new.json")
         if (!graphFile.exists()) {
             return null
         }
@@ -115,13 +125,14 @@ class GraphConstructionService(
     }
 
     fun clearCacheFiles(datasetName: String) {
-        deleteRecursivelyIfExists(cacheDir.resolve(datasetName))
-        deleteRecursivelyIfExists(chunksDir.resolve("$datasetName.txt"))
-        deleteRecursivelyIfExists(graphsDir.resolve("${datasetName}_new.json"))
+        val safeDatasetName = requireSafeDatasetName(datasetName)
+        deleteRecursivelyIfExists(cacheDir.resolve(safeDatasetName))
+        deleteRecursivelyIfExists(chunksDir.resolve("$safeDatasetName.txt"))
+        deleteRecursivelyIfExists(graphsDir.resolve("${safeDatasetName}_new.json"))
 
-        deleteDatasetPrefixEntries(logsDir, datasetName)
-        deleteDatasetPrefixEntries(chunksDir, datasetName)
-        deleteDatasetPrefixEntries(graphsDir, datasetName)
+        deleteDatasetPrefixEntries(logsDir, safeDatasetName)
+        deleteDatasetPrefixEntries(chunksDir, safeDatasetName)
+        deleteDatasetPrefixEntries(graphsDir, safeDatasetName)
     }
 
     private fun resolveCorpusPathWithDemoFallback(datasetName: String): Path? {

@@ -3,14 +3,16 @@ package com.youtu.graphrag.server.api
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.youtu.graphrag.shared.config.ConfigManager
-import java.nio.file.Files
-import java.nio.file.Path
+import com.youtu.graphrag.shared.llm.LlmClient
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonObject
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class QuestionAnsweringServiceTest {
@@ -95,6 +97,93 @@ class QuestionAnsweringServiceTest {
     }
 
     @Test
+    fun `answer question supports multi-subquestion decomposition and subquestion reasoning steps`() {
+        val root = createRootDir()
+        val config = createTestConfig(root)
+
+        writeCorpus(
+            root = root,
+            datasetName = "multi_ds",
+            documents =
+                listOf(
+                    mapOf(
+                        "title" to "Project Alpha",
+                        "text" to "Alice leads Project Alpha. Project Alpha is based in Tokyo.",
+                    ),
+                ),
+        )
+
+        val constructionService = GraphConstructionService(config = config, rootDir = root)
+        constructionService.constructGraph("multi_ds")
+
+        val qaService = QuestionAnsweringService(config = config, rootDir = root)
+        val updates = mutableListOf<QaStageUpdate>()
+        val response =
+            runBlocking {
+                qaService.answerQuestion(
+                    "multi_ds",
+                    "Who leads Project Alpha and where is Project Alpha based?",
+                    onQaUpdate = { update -> updates.add(update) },
+                )
+            }
+
+        assertTrue(response.subQuestions.size >= 2)
+        val subQuestionSteps = response.reasoningSteps.filter { it.type == "sub_question" }
+        assertTrue(subQuestionSteps.size >= 2)
+        assertTrue(subQuestionSteps.all { step -> step.question.isNotBlank() })
+
+        val decomposeUpdate = updates.firstOrNull { update -> update.stage == "decompose" }
+        assertNotNull(decomposeUpdate)
+        assertTrue(decomposeUpdate.payload["parallel_subquestions"] == true)
+    }
+
+    @Test
+    fun `answer question uses injected llm client output when available`() {
+        val root = createRootDir()
+        val config = createTestConfig(root)
+        config.overrideConfig(
+            mapOf(
+                "triggers" to mapOf("mode" to "noagent"),
+            ),
+        )
+
+        writeCorpus(
+            root = root,
+            datasetName = "llm_ds",
+            documents =
+                listOf(
+                    mapOf(
+                        "title" to "Project Alpha",
+                        "text" to "Alice leads Project Alpha.",
+                    ),
+                ),
+        )
+
+        val constructionService = GraphConstructionService(config = config, rootDir = root)
+        constructionService.constructGraph("llm_ds")
+
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String = "LLM injected answer"
+                    },
+            )
+
+        val response =
+            runBlocking {
+                qaService.answerQuestion(
+                    "llm_ds",
+                    "Who leads Project Alpha?",
+                )
+            }
+
+        assertTrue(response.answer == "LLM injected answer")
+    }
+
+    @Test
     fun `answer question throws when no graph artifacts exist`() {
         val root = createRootDir()
         val config = createTestConfig(root)
@@ -143,7 +232,5 @@ class QuestionAnsweringServiceTest {
         mapper.writerWithDefaultPrettyPrinter().writeValue(corpusDir.resolve("corpus.json").toFile(), documents)
     }
 
-    private fun createRootDir(): Path {
-        return Files.createTempDirectory("youtu-graphrag-question-answering-test")
-    }
+    private fun createRootDir(): Path = Files.createTempDirectory("youtu-graphrag-question-answering-test")
 }
