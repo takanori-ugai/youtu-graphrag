@@ -27,6 +27,7 @@ object JsonParityUtils {
         tolerance: Double,
         label: String = "value",
     ) {
+        require(tolerance >= 0.0) { "tolerance must be >= 0.0" }
         val delta = abs(expected - actual)
         assertTrue(
             delta <= tolerance,

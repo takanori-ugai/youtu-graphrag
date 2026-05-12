@@ -21,4 +21,11 @@ class EncodingDecodersTest {
 
         assertEquals(text, decodeBytesWithDetection(data))
     }
+
+    @Test
+    fun `handles garbage input gracefully`() {
+        val data = byteArrayOf(0x80.toByte(), 0x81.toByte())
+        // Should not throw exception
+        decodeBytesWithDetection(data)
+    }
 }

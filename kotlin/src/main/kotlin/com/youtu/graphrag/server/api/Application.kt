@@ -2,16 +2,15 @@ package com.youtu.graphrag.server.api
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.youtu.graphrag.server.api.contracts.BaseOperationResponse
-import com.youtu.graphrag.server.api.contracts.DatasetsResponse
 import com.youtu.graphrag.server.api.contracts.FileUploadResponse
 import com.youtu.graphrag.server.api.contracts.GraphConstructionRequest
 import com.youtu.graphrag.server.api.contracts.GraphConstructionResponse
 import com.youtu.graphrag.server.api.contracts.QuestionRequest
-import com.youtu.graphrag.server.api.contracts.QuestionResponse
-import com.youtu.graphrag.server.api.contracts.ReasoningStep
+import com.youtu.graphrag.shared.config.ConfigManager
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.PartData
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
@@ -20,6 +19,7 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
@@ -28,7 +28,10 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
+import io.ktor.utils.io.jvm.javaio.toInputStream
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
+import io.ktor.websocket.close
 import kotlinx.serialization.json.Json
 import java.time.Instant
 
@@ -45,6 +48,15 @@ fun main() {
 }
 
 fun Application.youtuGraphRagModule() {
+    val wsManager = WebSocketConnectionManager()
+
+    val runtimeConfig = ConfigManager("config/base_config.yaml")
+    val graphConstructionService = GraphConstructionService(config = runtimeConfig)
+    val questionAnsweringService = QuestionAnsweringService(config = runtimeConfig)
+
+    val datasetFileService = DatasetFileService()
+    datasetFileService.ensureStartupDirectories()
+
     install(ContentNegotiation) {
         json(
             Json {
@@ -79,12 +91,15 @@ fun Application.youtuGraphRagModule() {
                 mapOf(
                     "message" to "Youtu-GraphRAG Unified Interface is running!",
                     "status" to "ok",
-                    "graphrag_available" to false,
+                    "graphrag_available" to true,
                 ),
             )
         }
 
         webSocket("/ws/{client_id}") {
+            val clientId = call.parameters["client_id"] ?: "default"
+            wsManager.connect(clientId, this)
+
             try {
                 for (frame in incoming) {
                     if (frame is Frame.Close) {
@@ -92,57 +107,232 @@ fun Application.youtuGraphRagModule() {
                     }
                 }
             } finally {
-                // intentionally no-op: Kotlin backend conversion scaffold does not keep WS state yet
+                wsManager.disconnect(clientId)
+                close(CloseReason(CloseReason.Codes.NORMAL, "Connection closed"))
             }
         }
 
         post("/api/upload") {
-            call.respond(
-                HttpStatusCode.NotImplemented,
-                FileUploadResponse(
-                    success = false,
-                    message = "Upload pipeline is not implemented in Kotlin yet",
-                ),
-            )
+            val multipart = call.receiveMultipart()
+            val files = mutableListOf<IncomingFile>()
+            while (true) {
+                val part = multipart.readPart() ?: break
+                try {
+                    if (part is PartData.FileItem) {
+                        val fileName = part.originalFileName ?: "uploaded_${files.size}"
+                        val bytes = part.provider().toInputStream().readBytes()
+                        files.add(IncomingFile(fileName = fileName, bytes = bytes))
+                    }
+                } finally {
+                    part.dispose.invoke()
+                }
+            }
+
+            if (files.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No files were provided"))
+                return@post
+            }
+
+            try {
+                val result = datasetFileService.uploadFiles(files)
+                call.respond(
+                    FileUploadResponse(
+                        success = result.success,
+                        message = result.message,
+                        datasetName = result.datasetName,
+                        filesCount = result.filesCount,
+                    ),
+                )
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid upload request")))
+            } catch (error: Exception) {
+                logger.error(error) { "Upload failed" }
+                call.respond(HttpStatusCode.InternalServerError, mapOf("detail" to (error.message ?: "Upload failed")))
+            }
         }
 
         post("/api/construct-graph") {
             val request = call.receive<GraphConstructionRequest>()
-            call.respond(
-                HttpStatusCode.NotImplemented,
-                GraphConstructionResponse(
-                    success = false,
-                    message = "Graph construction is not implemented for dataset '${request.datasetName}'",
-                ),
+            val clientId = call.request.queryParameters["client_id"] ?: "default"
+
+            sendProgressUpdate(
+                wsManager = wsManager,
+                clientId = clientId,
+                stage = "construction",
+                progress = 5,
+                message = "Initializing graph builder...",
             )
+
+            try {
+                val result = graphConstructionService.constructGraph(request.datasetName)
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "construction",
+                    progress = 100,
+                    message = "Graph construction completed!",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "complete",
+                    stage = "construction",
+                    message = "Graph construction completed!",
+                )
+                call.respond(
+                    GraphConstructionResponse(
+                        success = result.success,
+                        message = result.message,
+                        graphData = result.graphData,
+                    ),
+                )
+            } catch (error: DatasetNotFoundException) {
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "construction",
+                    progress = 0,
+                    message = "Construction failed: ${error.message}",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "construction",
+                    message = "Construction failed: ${error.message}",
+                )
+                call.respond(HttpStatusCode.NotFound, mapOf("detail" to (error.message ?: "Dataset not found")))
+            } catch (error: Exception) {
+                logger.error(error) { "Graph construction failed for dataset '${request.datasetName}'" }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "construction",
+                    progress = 0,
+                    message = "Construction failed: ${error.message}",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "construction",
+                    message = "Construction failed: ${error.message}",
+                )
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("detail" to (error.message ?: "Graph construction failed")),
+                )
+            }
         }
 
         post("/api/ask-question") {
             val request = call.receive<QuestionRequest>()
-            call.respond(
-                HttpStatusCode.NotImplemented,
-                QuestionResponse(
-                    answer = "Kotlin retrieval pipeline is not implemented yet for dataset '${request.datasetName}'",
-                    subQuestions = emptyList(),
-                    retrievedTriples = emptyList(),
-                    retrievedChunks = emptyList(),
-                    reasoningSteps =
-                        listOf(
-                            ReasoningStep(
-                                type = "info",
-                                question = request.question,
-                                triplesCount = 0,
-                                chunksCount = 0,
-                                processingTime = 0.0,
-                            ),
-                        ),
-                    visualizationData = mapOf("status" to "not_implemented"),
-                ),
+            val clientId = call.request.queryParameters["client_id"] ?: "default"
+
+            sendProgressUpdate(
+                wsManager = wsManager,
+                clientId = clientId,
+                stage = "retrieval",
+                progress = 10,
+                message = "Initializing retrieval system...",
             )
+            sendQaUpdate(
+                wsManager = wsManager,
+                clientId = clientId,
+                stage = "start",
+                extra =
+                    mapOf(
+                        "dataset" to request.datasetName,
+                        "question" to request.question,
+                        "message" to "Question processing started",
+                    ),
+            )
+
+            try {
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "retrieval",
+                    progress = 50,
+                    message = "Running decomposition and retrieval...",
+                )
+
+                val response =
+                    questionAnsweringService.answerQuestion(
+                        datasetName = request.datasetName,
+                        question = request.question,
+                        onQaUpdate = { update ->
+                            sendQaUpdate(
+                                wsManager = wsManager,
+                                clientId = clientId,
+                                stage = update.stage,
+                                extra = update.payload,
+                            )
+                        },
+                    )
+
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "retrieval",
+                    progress = 100,
+                    message = "Answer generation completed!",
+                )
+                wsManager.sendMessage(
+                    clientId = clientId,
+                    message =
+                        mapOf(
+                            "type" to "qa_complete",
+                            "answer_preview" to response.answer.take(300),
+                            "sub_questions_count" to response.subQuestions.size,
+                            "triples_final_count" to response.retrievedTriples.size,
+                            "chunks_final_count" to response.retrievedChunks.size,
+                            "timestamp" to Instant.now().toString(),
+                        ),
+                )
+
+                call.respond(response)
+            } catch (error: GraphArtifactNotFoundException) {
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "retrieval",
+                    progress = 0,
+                    message = "Question answering failed: ${error.message}",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "retrieval",
+                    message = "Question answering failed: ${error.message}",
+                )
+                call.respond(HttpStatusCode.NotFound, mapOf("detail" to (error.message ?: "Graph not found")))
+            } catch (error: Exception) {
+                logger.error(error) { "Question answering failed for dataset '${request.datasetName}'" }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "retrieval",
+                    progress = 0,
+                    message = "Question answering failed: ${error.message}",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "retrieval",
+                    message = "Question answering failed: ${error.message}",
+                )
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("detail" to (error.message ?: "Question answering failed")),
+                )
+            }
         }
 
         get("/api/datasets") {
-            call.respond(DatasetsResponse(datasets = emptyList()))
+            call.respond(datasetFileService.getDatasets())
         }
 
         post("/api/datasets/{dataset_name}/schema") {
@@ -153,14 +343,40 @@ fun Application.youtuGraphRagModule() {
                         BaseOperationResponse(success = false, message = "Missing dataset_name path parameter"),
                     )
 
-            call.respond(
-                HttpStatusCode.NotImplemented,
-                BaseOperationResponse(
-                    success = false,
-                    message = "Custom schema upload is not implemented for dataset '$datasetName'",
-                    datasetName = datasetName,
-                ),
-            )
+            val multipart = call.receiveMultipart()
+            var schemaFileName: String? = null
+            var schemaBytes: ByteArray? = null
+
+            while (true) {
+                val part = multipart.readPart() ?: break
+                try {
+                    if (part is PartData.FileItem && schemaBytes == null) {
+                        schemaFileName = part.originalFileName ?: "schema.json"
+                        schemaBytes = part.provider().toInputStream().readBytes()
+                    }
+                } finally {
+                    part.dispose.invoke()
+                }
+            }
+
+            if (schemaBytes == null || schemaFileName == null) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No schema file was provided"))
+                return@post
+            }
+            val safeSchemaBytes = requireNotNull(schemaBytes)
+            val safeSchemaFileName = requireNotNull(schemaFileName)
+
+            try {
+                call.respond(datasetFileService.saveSchema(datasetName, safeSchemaFileName, safeSchemaBytes))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid schema")))
+            } catch (error: Exception) {
+                logger.error(error) { "Schema upload failed for '$datasetName'" }
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("detail" to (error.message ?: "Failed to upload schema")),
+                )
+            }
         }
 
         delete("/api/datasets/{dataset_name}") {
@@ -171,14 +387,17 @@ fun Application.youtuGraphRagModule() {
                         BaseOperationResponse(success = false, message = "Missing dataset_name path parameter"),
                     )
 
-            call.respond(
-                HttpStatusCode.NotImplemented,
-                BaseOperationResponse(
-                    success = false,
-                    message = "Dataset deletion is not implemented for '$datasetName'",
-                    datasetName = datasetName,
-                ),
-            )
+            try {
+                call.respond(datasetFileService.deleteDataset(datasetName))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid dataset")))
+            } catch (error: Exception) {
+                logger.error(error) { "Delete dataset failed for '$datasetName'" }
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("detail" to (error.message ?: "Failed to delete dataset")),
+                )
+            }
         }
 
         post("/api/datasets/{dataset_name}/reconstruct") {
@@ -188,24 +407,161 @@ fun Application.youtuGraphRagModule() {
                         HttpStatusCode.BadRequest,
                         BaseOperationResponse(success = false, message = "Missing dataset_name path parameter"),
                     )
+            val clientId = call.request.queryParameters["client_id"] ?: "default"
 
-            call.respond(
-                HttpStatusCode.NotImplemented,
-                BaseOperationResponse(
-                    success = false,
-                    message = "Dataset reconstruction is not implemented for '$datasetName'",
-                    datasetName = datasetName,
-                ),
+            sendProgressUpdate(
+                wsManager = wsManager,
+                clientId = clientId,
+                stage = "reconstruction",
+                progress = 5,
+                message = "Starting reconstruction...",
             )
+
+            try {
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "reconstruction",
+                    progress = 50,
+                    message = "Rebuilding knowledge graph...",
+                )
+
+                graphConstructionService.reconstructGraph(datasetName)
+
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "reconstruction",
+                    progress = 100,
+                    message = "Graph reconstruction completed!",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "complete",
+                    stage = "reconstruction",
+                    message = "Graph reconstruction completed!",
+                )
+
+                call.respond(
+                    mapOf(
+                        "success" to true,
+                        "message" to "Dataset reconstructed successfully",
+                        "dataset_name" to datasetName,
+                    ),
+                )
+            } catch (error: DatasetNotFoundException) {
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "reconstruction",
+                    progress = 0,
+                    message = "Reconstruction failed: ${error.message}",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "reconstruction",
+                    message = "Reconstruction failed: ${error.message}",
+                )
+                call.respond(HttpStatusCode.NotFound, mapOf("detail" to (error.message ?: "Dataset not found")))
+            } catch (error: Exception) {
+                logger.error(error) { "Reconstruction failed for '$datasetName'" }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "reconstruction",
+                    progress = 0,
+                    message = "Reconstruction failed: ${error.message}",
+                )
+                sendStageEvent(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    type = "error",
+                    stage = "reconstruction",
+                    message = "Reconstruction failed: ${error.message}",
+                )
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("detail" to (error.message ?: "Reconstruction failed")),
+                )
+            }
         }
 
         get("/api/graph/{dataset_name}") {
-            val payload = objectMapper.writeValueAsString(defaultGraphVisualization())
+            val datasetName = call.parameters["dataset_name"] ?: "demo"
+            val graphData =
+                graphConstructionService.loadGraphVisualization(datasetName) ?: run {
+                    val payload = objectMapper.writeValueAsString(defaultGraphVisualization())
+                    call.respondText(payload, ContentType.Application.Json)
+                    return@get
+                }
+            val payload = graphData.toString()
             call.respondText(payload, ContentType.Application.Json)
         }
     }
 
-    logger.info { "Kotlin API scaffold initialized at ${Instant.now()}" }
+    logger.info { "Kotlin API initialized at ${Instant.now()}" }
+}
+
+suspend fun sendProgressUpdate(
+    wsManager: WebSocketConnectionManager,
+    clientId: String,
+    stage: String,
+    progress: Int,
+    message: String,
+) {
+    wsManager.sendMessage(
+        clientId = clientId,
+        message =
+            mapOf(
+                "type" to "progress",
+                "stage" to stage,
+                "progress" to progress,
+                "message" to message,
+                "timestamp" to Instant.now().toString(),
+            ),
+    )
+}
+
+suspend fun sendStageEvent(
+    wsManager: WebSocketConnectionManager,
+    clientId: String,
+    type: String,
+    stage: String,
+    message: String,
+) {
+    wsManager.sendMessage(
+        clientId = clientId,
+        message =
+            mapOf(
+                "type" to type,
+                "stage" to stage,
+                "message" to message,
+                "timestamp" to Instant.now().toString(),
+            ),
+    )
+}
+
+suspend fun sendQaUpdate(
+    wsManager: WebSocketConnectionManager,
+    clientId: String,
+    stage: String,
+    extra: Map<String, Any?> = emptyMap(),
+) {
+    val payload =
+        mutableMapOf<String, Any?>(
+            "type" to "qa_update",
+            "stage" to stage,
+            "timestamp" to Instant.now().toString(),
+        )
+    payload.putAll(extra)
+
+    wsManager.sendMessage(
+        clientId = clientId,
+        message = payload,
+    )
 }
 
 private fun defaultGraphVisualization(): Map<String, Any> =

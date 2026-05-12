@@ -73,7 +73,9 @@ class ConfigManager(
         }
 
         rawConfig =
-            yamlMapper.readValue(configPath.toFile(), object : TypeReference<MutableMap<String, Any?>>() {})
+            Files.newInputStream(configPath).use { stream ->
+                yamlMapper.readValue(stream, object : TypeReference<MutableMap<String, Any?>>() {})
+            }
 
         parseConfig()
         validateConfig()
@@ -97,10 +99,16 @@ class ConfigManager(
         promptType: String,
         variables: Map<String, Any?>,
     ): String {
-        var rendered = getPrompt(category, promptType)
-        for ((key, value) in variables) {
-            rendered = rendered.replace("{$key}", value?.toString() ?: "")
-        }
+        val template = getPrompt(category, promptType)
+        val rendered =
+            PLACEHOLDER_REGEX.replace(template) { matchResult ->
+                val key = matchResult.groupValues[1]
+                if (variables.containsKey(key)) {
+                    variables[key]?.toString() ?: ""
+                } else {
+                    matchResult.value
+                }
+            }
 
         val missing = PLACEHOLDER_REGEX.find(rendered)?.groupValues?.get(1)
         if (missing != null) {
@@ -122,12 +130,13 @@ class ConfigManager(
         val path = Path.of(outputPath)
         Files.createDirectories(path.parent ?: Path.of("."))
 
-        if (path.toString().endsWith(".json")) {
-            jsonMapper.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), rawConfig)
-            return
+        Files.newOutputStream(path).use { stream ->
+            if (path.toString().endsWith(".json")) {
+                jsonMapper.writerWithDefaultPrettyPrinter().writeValue(stream, rawConfig)
+            } else {
+                yamlMapper.writeValue(stream, rawConfig)
+            }
         }
-
-        yamlMapper.writeValue(path.toFile(), rawConfig)
     }
 
     fun toMap(): Map<String, Any?> =
@@ -186,7 +195,8 @@ class ConfigManager(
         }
     }
 
-    private fun toStringAnyMap(map: Map<*, *>): Map<String, Any?> = map.entries.associate { (key, value) -> key.toString() to value }
+    @Suppress("UNCHECKED_CAST")
+    private fun toStringAnyMap(map: Map<*, *>): Map<String, Any?> = map as Map<String, Any?>
 
     private fun defaultConfigPath(): String = "config/base_config.yaml"
 

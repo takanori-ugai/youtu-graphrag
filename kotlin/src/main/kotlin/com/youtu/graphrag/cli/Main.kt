@@ -42,12 +42,18 @@ class MainCommand : Runnable {
     var overrideJson: String? = null
 
     override fun run() {
-        val config = ConfigProvider.reloadConfig(configPath)
+        val config =
+            try {
+                ConfigProvider.reloadConfig(configPath)
+            } catch (error: Exception) {
+                throw CommandLine.ParameterException(
+                    CommandLine(this),
+                    "Failed to load configuration: ${error.message}",
+                    error,
+                )
+            }
 
-        if (!applyOverridesIfPresent(config)) {
-            return
-        }
-
+        applyOverridesIfPresent(config)
         setupEnvironment(config)
 
         if (config.triggers.constructorTrigger) {
@@ -59,18 +65,20 @@ class MainCommand : Runnable {
         }
     }
 
-    private fun applyOverridesIfPresent(config: ConfigManager): Boolean {
-        val overrideInput = overrideJson ?: return true
+    private fun applyOverridesIfPresent(config: ConfigManager) {
+        val overrideInput = overrideJson ?: return
 
-        return try {
+        try {
             val overrides: Map<String, Any?> =
                 objectMapper.readValue(overrideInput, object : TypeReference<Map<String, Any?>>() {})
             config.overrideConfig(overrides)
             logger.info { "Applied configuration overrides" }
-            true
         } catch (error: Exception) {
-            logger.error(error) { "Invalid JSON in --override argument" }
-            false
+            throw CommandLine.ParameterException(
+                CommandLine(this),
+                "Invalid JSON in --override argument: ${error.message}",
+                error,
+            )
         }
     }
 

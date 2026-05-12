@@ -20,4 +20,13 @@ class JsonParityUtilsTest {
             label = "score",
         )
     }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `throws on negative tolerance`() {
+        JsonParityUtils.assertApproximatelyEquals(
+            expected = 1.0,
+            actual = 1.0,
+            tolerance = -0.1,
+        )
+    }
 }

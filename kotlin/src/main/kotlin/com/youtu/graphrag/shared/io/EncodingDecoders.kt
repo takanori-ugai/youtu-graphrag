@@ -4,6 +4,8 @@ import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
+import java.nio.charset.IllegalCharsetNameException
+import java.nio.charset.UnsupportedCharsetException
 
 private val candidateEncodings =
     listOf(
@@ -47,17 +49,21 @@ private fun decodeStrict(
             encoding
         }
 
-    val decoder =
-        Charset
-            .forName(resolvedEncoding)
-            .newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-
     return try {
+        val decoder =
+            Charset
+                .forName(resolvedEncoding)
+                .newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+
         val decoded = decoder.decode(ByteBuffer.wrap(data)).toString()
         decoded.removePrefix("\uFEFF")
     } catch (_: CharacterCodingException) {
+        null
+    } catch (_: UnsupportedCharsetException) {
+        null
+    } catch (_: IllegalCharsetNameException) {
         null
     }
 }
