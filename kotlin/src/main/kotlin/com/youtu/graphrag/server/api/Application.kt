@@ -148,9 +148,18 @@ fun Application.youtuGraphRagModule() {
         }
 
         post("/api/upload") {
+            val clientId = call.request.queryParameters["client_id"] ?: "default"
             val multipart = call.receiveMultipart()
             val tempFiles = mutableListOf<TempFileInfo>()
             try {
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "upload",
+                    progress = 10,
+                    message = "Starting file upload...",
+                )
+
                 while (true) {
                     val part = multipart.readPart() ?: break
                     try {
@@ -173,11 +182,34 @@ fun Application.youtuGraphRagModule() {
                 }
 
                 if (tempFiles.isEmpty()) {
+                    sendProgressUpdate(
+                        wsManager = wsManager,
+                        clientId = clientId,
+                        stage = "upload",
+                        progress = 0,
+                        message = "No files were provided",
+                    )
                     call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No files were provided"))
                     return@post
                 }
 
-                val result = datasetFileService.uploadFilesFromTemp(tempFiles)
+                val result =
+                    datasetFileService.uploadFilesFromTemp(tempFiles) { update ->
+                        sendProgressUpdate(
+                            wsManager = wsManager,
+                            clientId = clientId,
+                            stage = "upload",
+                            progress = update.progress,
+                            message = update.message,
+                        )
+                    }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "upload",
+                    progress = 100,
+                    message = "Upload completed successfully!",
+                )
                 call.respond(
                     FileUploadResponse(
                         success = result.success,
@@ -189,10 +221,24 @@ fun Application.youtuGraphRagModule() {
             } catch (error: IllegalArgumentException) {
                 logger.warn(error) { "Invalid upload request" }
                 tempFiles.forEach { it.tempFilePath.deleteIfExists() }
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid upload request")))
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "upload",
+                    progress = 0,
+                    message = "Upload failed: ${error.message ?: "Invalid upload request"}",
+                )
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid upload request"))
             } catch (error: Exception) {
                 logger.error(error) { "Upload failed" }
                 tempFiles.forEach { it.tempFilePath.deleteIfExists() }
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "upload",
+                    progress = 0,
+                    message = "Upload failed: ${error.message ?: "Internal error"}",
+                )
                 call.respond(HttpStatusCode.InternalServerError, mapOf("detail" to "Upload failed"))
             }
         }
@@ -205,16 +251,22 @@ fun Application.youtuGraphRagModule() {
                 return@post
             }
 
-            sendProgressUpdate(
+            sendProgressSequence(
                 wsManager = wsManager,
                 clientId = clientId,
                 stage = "construction",
-                progress = 5,
-                message = "Initializing graph builder...",
+                updates = constructionProgressStartUpdates(),
             )
 
             try {
                 val result = graphConstructionService.constructGraph(request.datasetName)
+                sendProgressUpdate(
+                    wsManager = wsManager,
+                    clientId = clientId,
+                    stage = "construction",
+                    progress = 95,
+                    message = "Preparing visualization data...",
+                )
                 sendProgressUpdate(
                     wsManager = wsManager,
                     clientId = clientId,
@@ -492,7 +544,7 @@ fun Application.youtuGraphRagModule() {
                 }
             } catch (error: IllegalArgumentException) {
                 logger.warn(error) { "Invalid schema for '$datasetName'" }
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid schema")))
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid schema"))
             } catch (error: Exception) {
                 logger.error(error) { "Schema upload failed for '$datasetName'" }
                 call.respond(
@@ -539,23 +591,14 @@ fun Application.youtuGraphRagModule() {
                 return@post
             }
 
-            sendProgressUpdate(
+            sendProgressSequence(
                 wsManager = wsManager,
                 clientId = clientId,
                 stage = "reconstruction",
-                progress = 5,
-                message = "Starting reconstruction...",
+                updates = reconstructionProgressStartUpdates(),
             )
 
             try {
-                sendProgressUpdate(
-                    wsManager = wsManager,
-                    clientId = clientId,
-                    stage = "reconstruction",
-                    progress = 50,
-                    message = "Rebuilding knowledge graph...",
-                )
-
                 graphConstructionService.reconstructGraph(datasetName)
 
                 sendProgressUpdate(
@@ -668,6 +711,40 @@ private fun resolveStaticDir(dirName: String): Path? {
         )
 
     return candidates.firstOrNull { candidate -> candidate.exists() && candidate.isDirectory() }
+}
+
+internal fun constructionProgressStartUpdates(): List<Pair<Int, String>> =
+    listOf(
+        2 to "Cleaning old cache files...",
+        5 to "Initializing graph builder...",
+        10 to "Loading configuration and corpus...",
+        20 to "Starting entity-relation extraction...",
+    )
+
+internal fun reconstructionProgressStartUpdates(): List<Pair<Int, String>> =
+    listOf(
+        5 to "Starting reconstruction...",
+        15 to "Old graph file deleted...",
+        25 to "Cache files cleared...",
+        35 to "Reinitializing graph builder...",
+        50 to "Rebuilding knowledge graph...",
+    )
+
+private suspend fun sendProgressSequence(
+    wsManager: WebSocketConnectionManager,
+    clientId: String,
+    stage: String,
+    updates: List<Pair<Int, String>>,
+) {
+    updates.forEach { (progress, message) ->
+        sendProgressUpdate(
+            wsManager = wsManager,
+            clientId = clientId,
+            stage = stage,
+            progress = progress,
+            message = message,
+        )
+    }
 }
 
 suspend fun sendProgressUpdate(

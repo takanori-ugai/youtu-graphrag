@@ -52,28 +52,45 @@ class GraphQ(
     private fun promptFormat(
         schema: String,
         question: String,
-    ): String =
-        runCatching {
-            val template =
-                config.getPrompt(
-                    category = "decomposition",
-                    promptType = decompositionPromptType(),
-                )
-            template
-                .replace("{ontology}", schema)
-                .replace("{question}", question)
-        }.getOrElse { error ->
-            logger.warn(error) { "Falling back to inline decomposition prompt template" }
+    ): String {
+        val promptType = decompositionPromptType()
+        val template = config.prompts["decomposition"]?.get(promptType)
+
+        val resolvedTemplate =
+            if (template.isNullOrBlank()) {
+                inlineFallbackPrompt(promptType)
+            } else {
+                template
+            }
+
+        return resolvedTemplate
+            .replace("{ontology}", schema)
+            .replace("{question}", question)
+    }
+
+    private fun inlineFallbackPrompt(promptType: String): String =
+        if (promptType == "novel") {
+            """
+            你是一个专业的问题分解大师，请根据以下问题和图本体模式，将问题分解为2-3个子问题，并识别涉及的schema类型。
+            问题：{question}
+            图本体模式：{ontology}
+            返回JSON对象，格式如下：
+            {
+              "sub_questions": [{"sub-question": "..."}],
+              "involved_types": {"nodes": [], "relations": [], "attributes": []}
+            }
+            """.trimIndent()
+        } else {
             """
             You are a professional question decomposition expert specializing in multi-hop reasoning.
-            Given the following ontology and question, return a concise JSON object:
+            Given the following ontology and question, decompose the question and return a concise JSON object:
             {
               "sub_questions": [{"sub-question": "..."}],
               "involved_types": {"nodes": [], "relations": [], "attributes": []}
             }
             Ontology:
-            $schema
-            Question: $question
+            {ontology}
+            Question: {question}
             """.trimIndent()
         }
 

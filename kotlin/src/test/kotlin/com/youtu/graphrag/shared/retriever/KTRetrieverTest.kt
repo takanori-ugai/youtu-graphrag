@@ -12,6 +12,7 @@ import kotlin.io.path.exists
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class KTRetrieverTest {
@@ -215,13 +216,18 @@ class KTRetrieverTest {
 
         val results = retriever.processRetrievalResults(question = "Give Beta details")
         val chunkIds = (results["chunk_ids"] as List<*>).map { value -> value.toString() }
-        val chunkContents = (results["chunk_contents"] as Map<*, *>).mapValues { entry -> entry.value.toString() }
+        val chunkContents = (results["chunk_contents"] as List<*>).map { value -> value.toString() }
+        val chunkContentsById = (results["chunk_contents_by_id"] as Map<*, *>).mapValues { entry -> entry.value.toString() }
+        val chunkRetrievalResults = (results["chunk_retrieval_results"] as List<*>).map { value -> value.toString() }
 
         assertEquals(2, chunkIds.size)
         assertTrue("c1" in chunkIds)
         assertTrue("c2" in chunkIds)
-        assertTrue(chunkContents["c1"]?.contains("Delta") == true)
-        assertTrue(chunkContents["c2"]?.contains("Beta") == true)
+        assertEquals(2, chunkContents.size)
+        assertTrue(chunkContentsById["c1"]?.contains("Delta") == true)
+        assertTrue(chunkContentsById["c2"]?.contains("Beta") == true)
+        assertEquals(2, chunkRetrievalResults.size)
+        assertTrue(chunkRetrievalResults.all { line -> line.startsWith("[Chunk ") })
     }
 
     @Test
@@ -305,10 +311,8 @@ class KTRetrieverTest {
         val cacheRoot = root.resolve("retriever/faiss_cache_new").resolve(datasetName)
         assertTrue(cacheRoot.resolve("triple_embedding_cache.json").exists())
         assertTrue(cacheRoot.resolve("triple_embedding_cache.npz").exists())
-        assertTrue(!cacheRoot.resolve("triple_embedding_cache.pt").exists())
         assertTrue(cacheRoot.resolve("chunk_embedding_cache.json").exists())
         assertTrue(cacheRoot.resolve("chunk_embedding_cache.npz").exists())
-        assertTrue(!cacheRoot.resolve("chunk_embedding_cache.pt").exists())
     }
 
     @Test
@@ -356,17 +360,15 @@ class KTRetrieverTest {
         val cacheRoot = root.resolve("retriever/faiss_cache_new").resolve(datasetName)
         assertTrue(!cacheRoot.resolve("triple_embedding_cache.json").exists())
         assertTrue(!cacheRoot.resolve("triple_embedding_cache.npz").exists())
-        assertTrue(!cacheRoot.resolve("triple_embedding_cache.pt").exists())
         assertTrue(!cacheRoot.resolve("chunk_embedding_cache.json").exists())
         assertTrue(!cacheRoot.resolve("chunk_embedding_cache.npz").exists())
-        assertTrue(!cacheRoot.resolve("chunk_embedding_cache.pt").exists())
     }
 
     @Test
-    fun `buildIndices ingests pt-named embedding caches when payload is npz-compatible`() {
-        val root = Files.createTempDirectory("youtu-graphrag-retriever-pt-cache-load-test")
+    fun `buildIndices ingests npz embedding caches`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-npz-cache-load-test")
         val config = createTestConfig(root)
-        val datasetName = "pt_cache_load_ds"
+        val datasetName = "npz_cache_load_ds"
         val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
 
         writeGraph(
@@ -393,12 +395,12 @@ class KTRetrieverTest {
         val dims = HashTextEmbedder().dimensions
         val customVector = FloatArray(dims).also { vector -> vector[0] = 1.0f }
         NpzEmbeddingCache.write(
-            path = cacheRoot.resolve("triple_embedding_cache.pt"),
+            path = cacheRoot.resolve("triple_embedding_cache.npz"),
             vectorsByKey = mapOf("[\"PtNodeA\", \"relates_to\", \"PtNodeB\"]" to customVector),
             expectedDimensions = dims,
         )
         NpzEmbeddingCache.write(
-            path = cacheRoot.resolve("chunk_embedding_cache.pt"),
+            path = cacheRoot.resolve("chunk_embedding_cache.npz"),
             vectorsByKey = mapOf("c1" to customVector),
             expectedDimensions = dims,
         )
@@ -432,16 +434,17 @@ class KTRetrieverTest {
         assertTrue(cacheRoot.resolve("chunk_embedding_cache.npz").exists())
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun `buildIndices throws when topK is negative`() {
         val root = Files.createTempDirectory("youtu-graphrag-retriever-negative-topk")
         val config = createTestConfig(root)
-        val retriever =
+        assertFailsWith<IllegalArgumentException> {
             createRetriever(
                 datasetName = "negative_topk_ds",
                 config = config,
                 topK = -1,
             )
+        }
     }
 
     private fun createRetriever(

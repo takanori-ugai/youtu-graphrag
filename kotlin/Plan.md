@@ -1,249 +1,272 @@
-# Youtu-GraphRAG Kotlin Compliance Implementation Plan
+# Youtu-GraphRAG Kotlin Conversion Plan (Recreated)
 
-## Goal
-Build a Kotlin implementation in this `kotlin/` project that is fully compliant with the Python implementation in `../`, including:
-- CLI workflow parity (`main.py`)
-- Web/API/WebSocket parity (`backend.py`)
-- Config/schema/data compatibility (`config/`, `schemas/`, `data/`)
-- Knowledge graph construction parity (`models/constructor/kt_gen.py`)
-- Retrieval/agentic reasoning parity (`models/retriever/*.py`)
-- Output/cache format compatibility (`output/*`, `retriever/faiss_cache_new/*`)
+Updated: 2026-05-13
 
-## Definition of "Fully Compliant"
-The Kotlin version is considered compliant when all of the following pass:
-1. Same API routes, request/response JSON fields, and WebSocket event shapes as Python.
-2. Same config keys and runtime override behavior as `config/base_config.yaml`.
-3. Same input/output file contracts:
-   - `output/graphs/{dataset}_new.json`
-   - `output/chunks/{dataset}.txt`
-   - `retriever/faiss_cache_new/{dataset}/...`
-4. Same execution modes and triggers (`agent`/`noagent`, constructor/retrieve toggles).
-5. Retrieval+answering pipeline parity (decomposition -> retrieval -> optional IRCoT).
-6. Golden parity tests demonstrate equivalent behavior on `demo` dataset (allowing bounded non-determinism for LLM text).
+## 1) Scope and Decisions
 
-## Current State (Kotlin)
-- `src/main/kotlin` and `src/test/kotlin` are scaffolded with concrete modules under:
-  - `com.youtu.graphrag.shared.config`, `shared.io`, `shared.constructor`, `shared.graph`
-  - `com.youtu.graphrag.server.api` and `com.youtu.graphrag.cli`
-- Project identity has been renamed to `youtu-graphrag` in `settings.gradle.kts`.
-- `ConfigManager` parity port exists with:
-  - typed config models
-  - YAML load
-  - nested runtime overrides
-  - prompt lookup/formatting
-  - output directory creation
-- API contract DTOs and Ktor server routes exist; current endpoint status:
-  - implemented: `GET /`, `GET /api/status`, `POST /api/upload`, `GET /api/datasets`, `POST /api/datasets/{dataset_name}/schema`, `DELETE /api/datasets/{dataset_name}`, `POST /api/construct-graph`, `POST /api/ask-question`, `POST /api/datasets/{dataset_name}/reconstruct`, `GET /api/graph/{dataset_name}`
-  - partially compliant: `POST /api/ask-question` and reconstruction/construction flows now emit WebSocket updates, but payload/detail parity with Python is still incomplete.
-  - implemented: static frontend parity for `GET /` (serves `frontend/index.html` when present) and static mounts for `/frontend` and `/assets` with fallback path resolution (`./` then `../`).
-- Construction path now writes:
-  - `output/graphs/{dataset}_new.json`
-  - `output/chunks/{dataset}.txt`
-  with cache cleanup behavior implemented in Kotlin.
-- Parity utilities and unit tests are in place and passing via `./gradlew test`.
+### Primary goal
+Port the Python GraphRAG system (`../backend.py`, `../main.py`, `../models/*`) to Kotlin (`kotlin/`) with behavior parity for:
+- API + WebSocket contracts
+- constructor outputs (`output/graphs`, `output/chunks`)
+- retrieval outputs and IRCoT flow
+- CLI workflows
 
-## Progress Snapshot (2026-05-12)
-- Completed:
-  - Phase 0 scaffolding and project rename
-  - Config/contract foundation (core of Phase 1)
-  - Dataset/file lifecycle APIs (major Phase 7 slice)
-  - Initial graph construction output pipeline (initial Phase 3 slice)
-  - Reconstruction route + progress/complete/error WS signaling
-  - Initial QA route implementation with retrieval results and QA WS signaling
-  - Static frontend/assets serving parity in Ktor (`/`, `/frontend`, `/assets`)
-  - Upload-time document parsing baseline in Kotlin (`.pdf`, `.docx`, `.doc`) wired into `DatasetFileService` with corpus ingestion + skip-on-empty behavior
-  - Legacy Word `.doc` parsing upgraded from heuristic decoding to Apache POI extraction path (with `.docx` POI-first parsing and XML fallback)
-  - Retrieval WebSocket parity pass: Python-aligned `progress` cadence/messages for `ask-question` (`10/40/50/65/75/.../100`) bridged from Kotlin `qa_update` stages, while preserving `qa_update` and `qa_complete` summary payloads
-  - CLI now executes dataset workflows (constructor cache cleanup/build + retrieval over QA files with JSON result logs)
-  - Shared QA pipeline now supports multi-subquestion decomposition and optional parallel sub-question retrieval
-  - CLI retrieval now reuses `QuestionAnsweringService` outputs (reasoning steps, visualization payload snapshot, simple eval summary)
-  - Initial LLM integration using LangChain4j `ChatModel` (OpenAI/Ollama factory + QA prompt/answer path wiring)
-  - LLM output cleanup + JSON repair utility (`LlmOutputParser`) and GraphQ LLM decomposition parsing/fallback wiring
-  - LLM provider/env matrix parity improvements (default OpenAI provider, Python-aligned defaults, Azure endpoint/deployment/api-version mapping, api-key header support)
-  - OpenAI-compatible `ChatModel` call-path integration test with local mock `/v1/chat/completions` server
-  - Azure-compatible `ChatModel` request-shape integration test (deployment path + `api-version` query + `api-key` header)
-  - Retrieval prompt template selection parity for dataset-specific modes (`general`, `novel`, `novel_eng`) in Kotlin retriever
-  - Retriever parity slice: type-filtered retrieval (`involved_types`) + adjacency-based path expansion (`recall_paths`) + triple reranking + merged chunk-id aggregation in Kotlin `KTRetriever`
-  - Retriever parity tests for type filtering, path expansion, and chunk/triple output shaping (`KTRetrieverTest`)
-  - Local vector retrieval baseline for Kotlin retriever (`LocalVectorIndex` + hash embeddings) with hybrid lexical+vector reranking for triples/chunks and config-driven fallback (`retrieval.enable_reranking`)
-  - Lucene HNSW ANN index integration for retriever vector search (`LuceneAnnIndex`) with automatic fallback to local vector index
-  - ANN-focused retriever tests (`LuceneAnnIndexTest`) and hybrid strategy wiring in `KTRetriever`
-  - Embedding cache persistence/reload baseline in Kotlin retriever (`triple_embedding_cache.json` and `chunk_embedding_cache.json`) with model/dimension metadata validation and stale-entry pruning
-  - Python-compatible NPZ embedding cache artifact support in Kotlin retriever (`chunk_embedding_cache.npz` + `triple_embedding_cache.npz`) with read/write integration and regression tests
-  - Cache on/off behavior tests for retriever indices (`KTRetrieverTest`)
-  - Configurable retriever embedding backend abstraction (`TextEmbedder`) with OpenAI-compatible embeddings mode and deterministic hash fallback (`RetrieverEmbedderFactory` + `OpenAiTextEmbedder`)
-  - OpenAI-compatible embeddings call-path tests and fallback coverage (`TextEmbedderFactoryTest`)
-  - Python `.pt` embedding-cache interoperability hooks for retriever caches (`TorchCacheInterop`): auto-attempt `.pt`->`.npz` conversion on load and optional `.npz`->`.pt` export (`embeddings.export_pt_cache`)
-  - PT interoperability regression tests for conversion hooks and `.pt`-named cache ingestion (`TorchCacheInteropTest`, `KTRetrieverTest`)
-  - Focused and full Gradle test suites passing after LLM/decomposition parity updates (`./gradlew --no-daemon test`)
-  - Test scaffolding for parity helpers and services
-- In progress:
-  - Full constructor parity with Python extraction pipeline and schema evolution
-  - Retriever/indexing parity for Python-equivalent local embedding model and full Python cache-format compatibility (Kotlin now supports hash + OpenAI-compatible embedding backends, JSON+NPZ caches, and `.pt` interop hooks; SentenceTransformer-equivalent local backend and direct `.pt` tensor serialization parity remain)
-  - Agentic IRCoT parity beyond current scaffold loop (LLM-driven reasoning behavior still pending)
-  - Full API/WebSocket behavior parity for retrieval and streaming events
-  - CLI deep parity with Python retrieval internals (full evaluator parity pending)
-  - LLM behavior parity (structured output robustness and remaining runtime parity details)
-- Not started:
-  - TreeComm parity
-  - YAML->JSON config migration
+### Explicit storage decision (required)
+`PyTorch .pt` cache storage is dropped in Kotlin.
+- Canonical embedding cache artifacts are:
+  - `*.json` (metadata / debug)
+  - `*.npz` (vector payload; Multik-backed)
+- No `.pt` export path should remain in Kotlin runtime behavior.
+- Legacy `.pt` handling is treated as migration debt and should be removed from core codepaths.
 
-## Target Kotlin Architecture
-Proposed package layout:
-- `com.youtu.graphrag.shared.config` -> YAML/JSON config loader + typed config models + override support
-- `com.youtu.graphrag.shared.llm` -> LangChain4j-based OpenAI/Azure client
-- `com.youtu.graphrag.shared.graph` -> JGraphT models + JSON load/save (NetworkX parity)
-- `com.youtu.graphrag.shared.constructor` -> `KTBuilder` equivalent
-- `com.youtu.graphrag.shared.treecomm` -> Community detection (Smile + NetworkAnalysis)
-- `com.youtu.graphrag.shared.retriever` -> Indexing + Retrieval (FAISS parity via HNSW/Lucene)
-- `com.youtu.graphrag.shared.decomposer` -> `GraphQ` equivalent
-- `com.youtu.graphrag.shared.ingest` -> Document parsing (Apache Tika + PDFBox)
-- `com.youtu.graphrag.server.api` -> Ktor REST + WebSocket parity with `backend.py`
-- `com.youtu.graphrag.cli` -> Picocli command entrypoint parity with `main.py`
+### Priority directive
+CLI migration parity is prioritized on the critical path.
 
-## Phase Plan
+---
 
-### Phase 0: Baseline Lock + Scaffolding
-Status: **Mostly complete** (baseline freeze snapshots still pending)
-- Create `src/main/kotlin` and `src/test/kotlin` structure.
-- Rename application identity from `causalrag` to `youtu-graphrag` in `settings.gradle.kts` and `build.gradle.kts`.
-- Freeze Python baseline snapshots (API schema, sample outputs, cache files) for regression.
-- Add parity test utilities (JSON canonicalization, tolerance matchers).
+## 2) Python vs Kotlin Snapshot (Current)
+
+### A. API/WebSocket layer
+- Python source: `../backend.py`
+- Kotlin source: `src/main/kotlin/com/youtu/graphrag/server/api/Application.kt`
+- Status: routes are present and mostly aligned (`/api/upload`, `/api/construct-graph`, `/api/ask-question`, datasets/schema/reconstruct/graph, WS endpoint).
+- Gap:
+  - `ask-question` payload/event detail parity is still partial (field-level and sequencing nuances).
+  - Contract lock is missing (no strict Python-vs-Kotlin fixture gate).
+
+### B. Constructor
+- Python source: `../models/constructor/kt_gen.py`
+- Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/constructor/KTBuilder.kt`
+- Status: Kotlin builds graph/chunks and writes expected files.
+- Gap:
+  - Python uses LLM extraction pipeline with schema-aware attributes/triples/entity types and optional schema evolution.
+  - Kotlin constructor is still heuristic/simplified (single-pass synthetic relations/keywords), not extraction-parity.
+
+### C. Retriever
+- Python source: `../models/retriever/enhanced_kt_retriever.py`, `../models/retriever/faiss_filter.py`
+- Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/retriever/KTRetriever.kt`
+- Status: Kotlin has lexical + vector hybrid retrieval, type filters, recall expansion, chunk merging, ANN via Lucene fallback.
+- Gap:
+  - Python retriever has substantially richer behavior (dual-path strategy orchestration, query enhancement, extensive caching/index features, more reranking/strategy internals).
+  - Output shape was improved recently, but full scoring/path behavior parity still not locked by fixtures.
+
+### D. Decomposer + IRCoT
+- Python source: `../models/retriever/agentic_decomposer.py`, `../main.py`, `../backend.py`
+- Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/decomposer/GraphQ.kt`, `src/main/kotlin/com/youtu/graphrag/server/api/QuestionAnsweringService.kt`
+- Status: decomposition + iterative loop exists; recent control-flow parity improvements merged.
+- Gap:
+  - Still needs strict parity for loop semantics, retries, and edge-case stop conditions against Python behavior.
+  - Prompt routing/templates are not yet parity-locked (Python uses mixed key names and inline IRCoT prompt variants; Kotlin uses YAML `retrieval.ircot` and different dataset key mapping).
+
+### E. TreeComm
+- Python source: `utils/tree_comm` usage through constructor path
+- Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/treecomm/FastTreeComm.kt`
+- Status: Kotlin implementation is currently a stub.
+- Gap: full algorithm parity not started.
+
+### F. CLI
+- Python source: `../main.py`
+- Kotlin source: `src/main/kotlin/com/youtu/graphrag/cli/Main.kt`
+- Status: constructor/retrieval workflows exist.
+- Gap: deeper evaluator and behavior parity with Python matrix remains incomplete.
+
+### G. Validation
+- Kotlin has unit/integration tests for major modules.
+- Gap: no hard Python-vs-Kotlin golden fixture suite enforcing parity across constructor/retrieval/IRCoT outputs.
+
+---
+
+## 3) Conversion Objectives (Definition of Done)
+Kotlin conversion is accepted when all are true:
+1. API/WS payloads and event timing are contract-compatible with Python for supported flows.
+2. Constructor outputs for fixed fixtures are parity-matching (allowing bounded LLM text variance only where documented).
+3. Retriever output shape + ranking behavior is fixture-validated against Python baselines.
+4. IRCoT loop decisions (`So the answer is` / `The new query is`) are fixture-validated.
+5. Kotlin cache artifacts are JSON+NPZ only; no `.pt` storage path remains.
+6. CI parity suite passes on demo fixtures.
+
+---
+
+## 4) Workstreams
+
+## WS-0: Remove `.pt` storage paths (High Priority)
+Status: Completed (2026-05-13)
+
+Tasks:
+- Remove `.pt` cache filenames and conversion hooks from Kotlin retriever persistence flow.
+- Remove `TorchCacheInterop` runtime usage from main retrieval path.
+- Remove `embeddings.export_pt_cache` from config model and YAML.
+- Keep NPZ (`NpzEmbeddingCache`) as canonical binary cache format.
+- Replace tests asserting `.pt` behavior with NPZ-only coverage.
 
 Exit criteria:
-- Kotlin project builds with empty module stubs and parity test scaffold.
+- `rg "\\.pt|export_pt_cache|TorchCacheInterop" src/main/kotlin config/base_config.yaml` returns no runtime-path hits.
+- Retriever tests pass with NPZ-only caching.
 
-### Phase 1: Config, Models, and Contracts
-Status: **In progress** (core completed, backend contract coverage partial)
-- Port `ConfigManager` and typed configs from `config/config_loader.py`.
-- Ensure YAML key compatibility with existing `base_config.yaml` (including prompts, retrieval, triggers).
-- Implement dataset config resolution and output directory creation.
-- Define Kotlin DTOs for all API request/response/WebSocket payloads used by frontend.
-- Implement robust decoding with encoding detection (match `decode_bytes_with_detection` in `backend.py`).
+## WS-1: Retrieval parity against Python fixtures (High Priority)
+Status: In progress
 
-Exit criteria:
-- Config load + override behavior matches Python for known fixtures.
-
-### Phase 1.5: Config Format Migration (YAML -> JSON)
-Status: **Not started**
-- Define canonical JSON config contract equivalent to `config/base_config.yaml`.
-- Build a one-time converter utility (deterministic key ordering).
-- Update config documentation and examples to JSON syntax.
+Tasks:
+- Build deterministic fixture harness comparing Python and Kotlin retrieval outputs on same graph/chunk inputs.
+- Lock parity fields at minimum:
+  - `triples`
+  - `chunk_ids`
+  - `chunk_contents`
+  - `chunk_retrieval_results`
+  - strategy metadata
+- Document tolerated differences (if any) with explicit rationale.
 
 Exit criteria:
-- JSON config is the default in Kotlin runtime and CI.
+- Fixture tests fail on unexpected drift and pass on known-tolerated variance.
 
-### Phase 2: LLM Client + Prompt Engine
-Status: **In progress** (ChatModel-based client, response cleanup, JSON repair utility, provider/env matrix parity, and mock-server call-path tests implemented; structured-output parity remains)
-- Port `LLMCompletionCall` behavior using LangChain4j:
-  - env vars parity (`LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, `OPENAI_PROVIDER`, etc.)
-  - OpenAI/Azure endpoint compatibility
-  - response cleanup (fence stripping, JSON prefix normalization)
-- Port prompt selection/format behavior for construction/decomposition/retrieval modes.
-- Implement `json_repair` equivalent for robust LLM output parsing.
+## WS-2: IRCoT parity hardening (High Priority)
+Status: In progress
 
-Exit criteria:
-- Prompt generation snapshots match Python templates.
-- Integration test proves LLM call path with mock server.
-
-### Phase 3: Graph I/O + Constructor Parity
-Status: **In progress** (output contracts implemented, extraction parity pending)
-- Port `KTBuilder`:
-  - Token-based chunking with overlap (using JTokkit)
-  - Entity/attribute/triple extraction pipeline
-  - Graph levels (attribute/entity/keyword/community)
-  - Schema evolution in agent mode (updates `schemas/{dataset}.json`)
-  - Graph serialization format parity (JGraphT -> Relationship JSON)
-- Port `DocumentParser` using Apache Tika/PDFBox (support PDF, DOCX, DOC, RTF).
+Tasks:
+- Align loop stop/continue semantics with Python for:
+  - final-answer marker extraction
+  - new-query marker extraction
+  - missing-marker fallback
+  - repeated-query termination
+- Align stage update payload sequencing with backend behavior.
+- Add edge-case tests for malformed and multiline reasoning outputs.
 
 Exit criteria:
-- On deterministic mocked LLM outputs, graph JSON and chunk file match Python format.
+- IRCoT fixture tests pass for at least: direct-answer, iterative-query, and no-marker fallback scenarios.
 
-### Phase 4: TreeComm Parity
-Status: **Not started**
-- Port `FastTreeComm` using Smile/NetworkAnalysis:
-  - Semantic + structural similarity blending
-  - KMeans clustering/refinement strategy
-  - Community naming/summaries via LLM batch prompts
-  - Keyword node generation and link rules
+## WS-3: Constructor extraction parity (Medium Priority)
+Status: In progress
 
-Exit criteria:
-- Community + keyword node/edge structures match Python schema expectations.
-
-### Phase 5: Retriever + Indexing Parity
-Status: **In progress** (baseline graph/chunk indexing + keyword retrieval + retrieval prompt-template mode mapping implemented; type-filtered retrieval, path expansion, triple reranking, Lucene HNSW ANN retrieval, configurable embedding backends, Kotlin embedding cache persistence with NPZ artifacts, and `.pt` interop hooks are in place; full Python local-embedding and direct `.pt` serialization parity remain)
-- Port `DualFAISSRetriever` + `KTRetriever` retrieval pipeline:
-  - Node/relation/triple/community indexing
-  - Dual-path retrieval (triples + communities)
-  - Type-filtered retrieval
-  - Keyword search, path expansion, triple reranking
-  - Chunk embedding retrieval + reranking
-- Align embedding model + cache artifact format with Python retriever expectations (`retriever/faiss_cache_new/{dataset}/...`) or document/version intentional divergence.
+Tasks:
+- Replace heuristic constructor behavior with schema-aware extraction parity:
+  - attributes
+  - triples
+  - entity types
+- Add agent-mode schema evolution behavior equivalent to Python config path.
+- Ensure chunking semantics and output formatting match fixture expectations.
 
 Exit criteria:
-- Retrieval result shape and scoring pipeline pass parity tests on demo fixtures.
+- Constructor fixture output compatibility passes for demo corpus snapshots.
 
-### Phase 6: Agentic Decomposer + IRCoT Loop
-Status: **In progress** (iterative loop + multi-subquestion/parallel path implemented; GraphQ now uses LLM-based decomposition with robust parse fallback, IRCoT behavior parity still pending)
-- Port `GraphQ.decompose`.
-- Port no-agent and agent flows from `main.py` / `backend.py`:
-  - Sub-question decomposition
-  - Parallel sub-question retrieval (using Coroutines)
-  - Iterative reasoning (IRCoT: thoughts -> new query or final answer)
-  - Context assembly and final answer generation
+## WS-8: Prompt Routing/Template Parity (High Priority)
+Status: In progress
 
-Exit criteria:
-- End-to-end QA flow works in both modes with expected intermediate artifacts.
+Prompt audit findings (2026-05-13):
+- Python decomposition prompt lookup uses `decomposition.anony_chs`; Kotlin uses `decomposition.novel` for `anony_chs`.
+- Python retrieval prompt lookup uses `retrieval.novel_chs` for dataset `novel`; Kotlin uses `retrieval.novel` and routes `anony_chs`/`novel` to that key.
+- Python IRCoT prompt text is inline in `main.py` and `backend.py` (two variants); Kotlin uses YAML `prompts.retrieval.ircot`.
+- Python constructor is prompt-driven (`construction.*`); Kotlin constructor currently bypasses prompt templates.
 
-### Phase 7: Web Backend/API + WebSocket Parity
-Status: **In progress** (core routes active; WS events partially aligned)
-- Implement Ktor endpoints matching Python:
-  - `POST /api/upload`, `POST /api/construct-graph`, `POST /api/ask-question`, etc.
-  - Preserve `qa_update`, `progress`, `qa_complete` WebSocket event shapes.
-- Serve `frontend/` and `assets/` static content. **Completed in Kotlin route layer.**
-
-Exit criteria:
-- Existing frontend works unmodified against Kotlin backend.
-
-### Phase 8: CLI Parity
-Status: **In progress** (constructor/retriever workflows implemented; deep retrieval parity pending)
-- Implement Picocli CLI args and behavior matching `main.py`:
-  - `--config`, `--datasets`, `--override`
-- Support constructor-only, retriever-only, and combined workflows. **Implemented in Kotlin CLI pipeline.**
+Tasks:
+- Build a prompt parity matrix (Python vs Kotlin) for:
+  - `construction`, `decomposition`, `retrieval`, `retrieval.ircot`
+  - datasets: `demo`, `anony_chs`, `anony_eng` (and `novel` aliases where present)
+  - modes: `noagent`, `agent`
+- Add explicit prompt-key alias compatibility in Kotlin for Python key variants (`anony_chs` / `novel`, `novel_chs` / `novel`) while keeping canonical keys documented.
+- Add snapshot tests for rendered prompts (variable substitution included) in CLI/API paths.
+- Decide and document IRCoT source-of-truth policy:
+  - either lock to YAML template parity and move Python inline variants behind same config keys, or
+  - emulate backend/main inline variant selection in Kotlin for strict fixture parity.
+- Fold constructor prompt parity completion into WS-3 implementation and validate against Python prompt snapshots.
 
 Exit criteria:
-- CLI command matrix works with Kotlin entrypoint.
+- Rendered prompt snapshots match Python baselines for target datasets/modes.
+- No unresolved prompt-key mismatches between Python and Kotlin runtime paths.
+- IRCoT prompt variant selection is deterministic and fixture-tested.
 
-### Phase 9: Verification and Compliance Gates
-Status: **In progress** (unit/integration tests passing in Kotlin; Python-vs-Kotlin parity regression suite still pending)
-- Contract tests for API/WS.
-- Snapshot tests for graph/chunk outputs.
-- Parity tests (Python-vs-Kotlin) on `demo` dataset.
-- Quality gates: `ktlint`, `detekt`, `test`.
+## WS-4: API/WS contract lock (Medium Priority)
+Status: In progress
+
+Tasks:
+- Add contract tests for endpoint payload shapes and WS event series.
+- Verify progress cadence + event payloads for upload/construct/reconstruct/ask-question.
+- Validate frontend compatibility with unmodified Python frontend assets.
 
 Exit criteria:
-- All compliance checks green.
+- Contract tests cover all public routes and core WS events.
 
-### Phase 10: Packaging and Docs
-Status: **Not started**
-- Update README for Kotlin modes.
-- Add Kotlin `start.sh` equivalents.
+## WS-5: TreeComm parity (Medium/Low Priority)
+Status: Not started
 
-## Technical Choices & Dependencies (Build Alignment)
-- **Runtime**: Kotlin 2.3.20 (JVM)
-- **Web**: Ktor 3.4.1 (Netty)
-- **Graph**: JGraphT 1.5.2 + NetworkAnalysis 1.3.0
-- **LLM**: LangChain4j 1.12.2
-- **Tokenizer**: JTokkit 1.1.0
-- **Math/ML**: Smile 4.4.2
-- **CLI**: Picocli 4.7.6
-- **Config**: Jackson YAML/JSON
-- **Ingest**: Apache PDFBox 3.0.7 (consider adding Apache Tika)
+Tasks:
+- Implement actual community detection flow (replace stub).
+- Match Python schema expectations for community/keyword artifacts.
 
-## Risks and Mitigations
-1. **FAISS Parity**: FAISS is native-heavy.
-   - Mitigation: Use a robust JVM ANN (HNSW) and ensure the logic matches Python's dual-path retrieval.
-2. **LLM Output Variance**: LLM might return different JSON.
-   - Mitigation: Use strict prompts and `json_repair` equivalent.
-3. **Graph Algorithm Delta**: NetworkX and JGraphT might differ in some default behaviors.
-   - Mitigation: Use explicit JGraphT implementations for required algorithms (shortest path, neighbors).
+Exit criteria:
+- TreeComm outputs satisfy schema and fixture-level parity checks.
+
+## WS-6: CLI deep parity (High Priority)
+Status: In progress
+
+Tasks:
+- Align QA evaluation/reporting behavior with Python CLI.
+- Validate command-matrix compatibility (`--config`, `--datasets`, `--override`).
+
+Progress update (2026-05-13):
+- Added Python-style CLI evaluator prompt flow (`"1"`/`"0"` via LLM) with heuristic fallback.
+- Extended CLI artifacts with per-question timing/eval method and dataset-level QA summary JSON.
+- Added CLI option-matrix tests for valid and invalid `--override` handling with multi-dataset input.
+
+Exit criteria:
+- Kotlin CLI reproduces Python workflow outputs for fixture runs.
+
+## WS-7: Config Format Migration (YAML -> JSON) (Medium Priority)
+Status: Not started
+
+Tasks:
+- Define canonical JSON config schema equivalent to `config/base_config.yaml` semantics.
+- Add a deterministic one-time converter from YAML config to JSON (stable key ordering).
+- Update `ConfigManager` defaults and docs/examples to prefer JSON config path.
+- Keep temporary backward compatibility for YAML loading during migration window.
+- Add tests validating that YAML and JSON configs produce identical runtime `AppConfig`.
+
+Exit criteria:
+- JSON config is the default runtime format for Kotlin.
+- YAML compatibility is either explicitly deprecated or removed per release policy.
+- CI includes config-parity tests across YAML and JSON fixtures.
+
+---
+
+## 5) Immediate Execution Order
+
+1. Complete WS-6 (CLI deep parity) first.
+2. Execute WS-8 prompt routing/template parity lock.
+3. Start WS-7 config migration scaffolding (YAML->JSON converter + parity tests).
+4. Lock WS-1 retrieval fixtures (NPZ-only cache assumptions).
+5. Finish WS-2 IRCoT edge-case parity tests.
+6. Move to WS-3 constructor extraction parity.
+7. Finalize WS-4 contract locks; then WS-5.
+
+---
+
+## 6) Verification Gates
+
+Per PR/change-set:
+- Unit tests for touched modules
+- Focused parity fixture tests for impacted flow
+- Full Kotlin test run before merge
+
+Release gate:
+- Parity fixture suite green
+- API/WS contract tests green
+- No `.pt` storage path in runtime code/config
+
+---
+
+## 7) Risks and Mitigations
+
+1. LLM nondeterminism can mask parity regressions.
+- Mitigation: mock/frozen LLM fixture mode for parity tests.
+
+2. Python retriever complexity exceeds current Kotlin abstraction.
+- Mitigation: introduce fixture-driven incremental parity slices instead of full rewrite in one pass.
+
+3. Historical `.pt` compatibility code can reintroduce accidental coupling.
+- Mitigation: delete `.pt` config + runtime hooks; keep one-way migration docs only if needed.
+
+---
+
+## 8) Tracking Notes
+
+- Current Kotlin repository already contains meaningful progress in API, retrieval, and IRCoT scaffolding.
+- This recreated plan supersedes older progress notes where they conflict with the `.pt` storage decision.

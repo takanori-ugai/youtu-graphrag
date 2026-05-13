@@ -199,6 +199,72 @@ class QuestionAnsweringServiceTest {
     }
 
     @Test
+    fun `answer question preserves initial answer when ircot response has no new-query marker`() {
+        val root = createRootDir()
+        val config = createTestConfig(root)
+
+        writeCorpus(
+            root = root,
+            datasetName = "ircot_fallback_ds",
+            documents =
+                listOf(
+                    mapOf(
+                        "title" to "Project Alpha",
+                        "text" to "Alice leads Project Alpha.",
+                    ),
+                ),
+        )
+
+        val constructionService = GraphConstructionService(config = config, rootDir = root)
+        constructionService.constructGraph("ircot_fallback_ds")
+
+        var retrievalPromptCalls = 0
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String =
+                            when {
+                                prompt.contains("decompose", ignoreCase = true) -> {
+                                    """
+                                    {
+                                      "sub_questions": [{"sub-question": "Who leads Project Alpha?"}],
+                                      "involved_types": {"nodes": [], "relations": [], "attributes": []}
+                                    }
+                                    """.trimIndent()
+                                }
+
+                                prompt.contains("The new query is:", ignoreCase = true) -> {
+                                    "I need one more clue."
+                                }
+
+                                else -> {
+                                    retrievalPromptCalls += 1
+                                    if (retrievalPromptCalls == 1) {
+                                        "Seed answer from initial context."
+                                    } else {
+                                        ""
+                                    }
+                                }
+                            }
+                    },
+            )
+
+        val response =
+            runBlocking {
+                qaService.answerQuestion(
+                    "ircot_fallback_ds",
+                    "Who leads Project Alpha?",
+                )
+            }
+
+        assertTrue(response.answer == "Seed answer from initial context.")
+        assertTrue(response.reasoningSteps.count { it.type == "ircot_step" } == 1)
+    }
+
+    @Test
     fun `answer question throws when no graph artifacts exist`() {
         val root = createRootDir()
         val config = createTestConfig(root)

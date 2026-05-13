@@ -2,6 +2,7 @@ package com.youtu.graphrag.server.api
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.youtu.graphrag.shared.ingest.DocumentParser
+import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
@@ -24,14 +25,16 @@ class DatasetFileServiceTest {
         service.ensureStartupDirectories()
 
         val result =
-            service.uploadFiles(
-                listOf(
-                    IncomingFile(
-                        fileName = "My file.txt",
-                        bytes = "hello world".encodeToByteArray(),
+            runBlocking {
+                service.uploadFiles(
+                    listOf(
+                        IncomingFile(
+                            fileName = "My file.txt",
+                            bytes = "hello world".encodeToByteArray(),
+                        ),
                     ),
-                ),
-            )
+                )
+            }
 
         assertTrue(result.success)
         assertEquals("My_file", result.datasetName)
@@ -60,14 +63,16 @@ class DatasetFileServiceTest {
         service.ensureStartupDirectories()
 
         val result =
-            service.uploadFiles(
-                listOf(
-                    IncomingFile(
-                        fileName = "notes.docx",
-                        bytes = "placeholder".encodeToByteArray(),
+            runBlocking {
+                service.uploadFiles(
+                    listOf(
+                        IncomingFile(
+                            fileName = "notes.docx",
+                            bytes = "placeholder".encodeToByteArray(),
+                        ),
                     ),
-                ),
-            )
+                )
+            }
 
         assertTrue(result.success)
         assertEquals(1, result.filesCount)
@@ -93,18 +98,21 @@ class DatasetFileServiceTest {
 
         val error =
             assertFailsWith<IllegalArgumentException> {
-                service.uploadFiles(
-                    listOf(
-                        IncomingFile(
-                            fileName = "report.pdf",
-                            bytes = "placeholder".encodeToByteArray(),
+                runBlocking {
+                    service.uploadFiles(
+                        listOf(
+                            IncomingFile(
+                                fileName = "report.pdf",
+                                bytes = "placeholder".encodeToByteArray(),
+                            ),
                         ),
-                    ),
-                )
+                    )
+                }
             }
 
         assertTrue(error.message?.contains("No supported files were uploaded") == true)
         assertTrue(error.message?.contains("report.pdf") == true)
+        assertTrue(!root.resolve("data/uploaded/report").exists())
     }
 
     @Test
@@ -188,10 +196,70 @@ class DatasetFileServiceTest {
 
         val error =
             assertFailsWith<IllegalArgumentException> {
-                service.uploadFiles(listOf(IncomingFile("binary.exe", byteArrayOf(1, 2, 3))))
+                runBlocking {
+                    service.uploadFiles(listOf(IncomingFile("binary.exe", byteArrayOf(1, 2, 3))))
+                }
             }
 
         assertTrue(error.message?.contains("No supported files were uploaded") == true)
+        assertTrue(!root.resolve("data/uploaded/binary").exists())
+    }
+
+    @Test
+    fun `upload with mixed supported and unsupported files does not persist unsupported files`() {
+        val root = createRootDir()
+        val service = DatasetFileService(rootDir = root, clock = fixedClock())
+        service.ensureStartupDirectories()
+
+        val result =
+            runBlocking {
+                service.uploadFiles(
+                    listOf(
+                        IncomingFile("keep.txt", "hello".encodeToByteArray()),
+                        IncomingFile("drop.exe", byteArrayOf(1, 2, 3)),
+                    ),
+                )
+            }
+
+        assertTrue(result.success)
+        assertEquals("2files_20260512", result.datasetName)
+        assertEquals(1, result.filesCount)
+        assertTrue(root.resolve("data/uploaded/2files_20260512/keep.txt").exists())
+        assertTrue(!root.resolve("data/uploaded/2files_20260512/drop.exe").exists())
+    }
+
+    @Test
+    fun `upload files skips failing document parser and continues processing`() {
+        val root = createRootDir()
+        val parser =
+            object : DocumentParser {
+                override fun parseFile(
+                    path: String,
+                    extension: String,
+                ): String = throw IllegalStateException("parse failed")
+            }
+        val service = DatasetFileService(rootDir = root, clock = fixedClock(), documentParser = parser)
+        service.ensureStartupDirectories()
+
+        val progressUpdates = mutableListOf<UploadProgressUpdate>()
+        val result =
+            runBlocking {
+                service.uploadFiles(
+                    files =
+                        listOf(
+                            IncomingFile("keep.txt", "hello".encodeToByteArray()),
+                            IncomingFile("broken.docx", byteArrayOf(1, 2, 3)),
+                        ),
+                    onProgress = { update -> progressUpdates.add(update) },
+                )
+            }
+
+        assertTrue(result.success)
+        assertEquals(1, result.filesCount)
+        assertTrue(progressUpdates.any { it.progress == 50 && it.message == "Processed keep.txt" })
+        assertTrue(progressUpdates.any { it.progress == 90 && it.message == "Failed to parse broken.docx" })
+        assertTrue(root.resolve("data/uploaded/2files_20260512/keep.txt").exists())
+        assertTrue(root.resolve("data/uploaded/2files_20260512/broken.docx").exists())
     }
 
     private fun createRootDir(): Path = Files.createTempDirectory("youtu-graphrag-dataset-service-test")

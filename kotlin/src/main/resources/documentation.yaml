@@ -28,7 +28,14 @@ paths:
   /api/upload:
     post:
       summary: Upload files to create a new dataset
+      parameters:
+        - name: client_id
+          in: query
+          required: false
+          schema:
+            type: string
       requestBody:
+        required: true
         content:
           multipart/form-data:
             schema:
@@ -149,6 +156,7 @@ paths:
           schema:
             type: string
       requestBody:
+        required: true
         content:
           multipart/form-data:
             schema:

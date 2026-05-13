@@ -106,6 +106,7 @@ dependencies {
     implementation("info.picocli:picocli:4.7.6")
     implementation("nl.cwts:networkanalysis:$networkAnalysisVersion")
     implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.17.2")
+    implementation("org.jetbrains.kotlinx:multik-default:0.3.1")
 }
 
 tasks {

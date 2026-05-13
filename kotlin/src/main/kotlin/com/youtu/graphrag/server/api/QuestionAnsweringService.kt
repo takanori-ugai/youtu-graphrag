@@ -171,7 +171,7 @@ class QuestionAnsweringService(
                 ),
             )
 
-            val thoughts = mutableListOf<String>()
+            val thoughts = mutableListOf("Initial: ${finalAnswer.take(200)}")
             var currentQuery = question
             val maxSteps =
                 config.retrieval.agent.maxSteps
@@ -245,8 +245,14 @@ class QuestionAnsweringService(
                     break
                 }
 
+                if (!containsNewQueryMarker(thought)) {
+                    finalAnswer = finalAnswer.ifBlank { thought }
+                    break
+                }
+
                 val newQuery = extractNewQuery(thought)
                 if (newQuery.isNullOrBlank() || newQuery == currentQuery) {
+                    finalAnswer = finalAnswer.ifBlank { thought }
                     break
                 }
 
@@ -312,6 +318,8 @@ class QuestionAnsweringService(
         return thought.substring(index + marker.length).trim().ifBlank { null }
     }
 
+    private fun containsNewQueryMarker(thought: String): Boolean = thought.contains("The new query is:", ignoreCase = true)
+
     private fun extractNewQuery(thought: String): String? {
         val marker = "The new query is:"
         val index = thought.indexOf(marker, ignoreCase = true)
@@ -321,8 +329,9 @@ class QuestionAnsweringService(
         return thought
             .substring(index + marker.length)
             .lineSequence()
-            .firstOrNull()
-            ?.trim()
+            .map { line -> line.trim() }
+            .firstOrNull { line -> line.isNotBlank() }
+            ?.trim('"', '\'')
             .orEmpty()
             .ifBlank { null }
     }
@@ -384,13 +393,23 @@ class QuestionAnsweringService(
                     ),
                 )
             }
+        val chunkContentsById = parseStringMap(retrievalResultsHolder["chunk_contents_by_id"])
+        val chunkIds =
+            parseStringList(retrievalResultsHolder["chunk_ids"]).ifEmpty {
+                chunkContentsById.keys.toList()
+            }
 
         return SubQuestionRetrieval(
             index = index,
             subQuestionText = subQuestionText,
             triples = parseStringList(retrievalResultsHolder["triples"]),
-            chunkIds = parseStringList(retrievalResultsHolder["chunk_ids"]),
-            chunkContents = parseChunkContentMap(retrievalResultsHolder["chunk_contents"]),
+            chunkIds = chunkIds,
+            chunkContents =
+                parseChunkContentMap(
+                    chunkIds = chunkIds,
+                    chunkContentsRaw = retrievalResultsHolder["chunk_contents"],
+                    chunkContentsByIdRaw = chunkContentsById,
+                ),
             processingTime = elapsedMs / 1000.0,
         )
     }
@@ -401,8 +420,16 @@ class QuestionAnsweringService(
         chunkById: MutableMap<String, String>,
     ) {
         val triples = parseStringList(retrievalResults["triples"])
-        val chunkIds = parseStringList(retrievalResults["chunk_ids"])
-        val chunkContents = parseChunkContentMap(retrievalResults["chunk_contents"])
+        val chunkIds =
+            parseStringList(retrievalResults["chunk_ids"]).ifEmpty {
+                parseStringMap(retrievalResults["chunk_contents_by_id"]).keys.toList()
+            }
+        val chunkContents =
+            parseChunkContentMap(
+                chunkIds = chunkIds,
+                chunkContentsRaw = retrievalResults["chunk_contents"],
+                chunkContentsByIdRaw = retrievalResults["chunk_contents_by_id"],
+            )
 
         triples.forEach { triple -> allTriples.add(triple) }
         chunkIds.forEach { chunkId ->
@@ -696,11 +723,72 @@ class QuestionAnsweringService(
         return raw.mapNotNull { it?.toString() }
     }
 
-    private fun parseChunkContentMap(raw: Any?): Map<String, String> {
+    private fun parseChunkContentMap(raw: Any?): Map<String, String> =
+        parseChunkContentMap(
+            chunkIds = emptyList(),
+            chunkContentsRaw = raw,
+            chunkContentsByIdRaw = null,
+        )
+
+    private fun parseChunkContentMap(
+        chunkIds: List<String>,
+        chunkContentsRaw: Any?,
+        chunkContentsByIdRaw: Any?,
+    ): Map<String, String> {
+        val byId = parseStringMap(chunkContentsByIdRaw)
+        if (byId.isNotEmpty()) {
+            val ordered = linkedMapOf<String, String>()
+            chunkIds.forEach { chunkId ->
+                ordered[chunkId] = byId[chunkId] ?: "[Missing content for chunk $chunkId]"
+            }
+            byId.forEach { (chunkId, content) ->
+                if (chunkId !in ordered) {
+                    ordered[chunkId] = content
+                }
+            }
+            return ordered
+        }
+
+        when (chunkContentsRaw) {
+            is Map<*, *> -> {
+                val map = parseStringMap(chunkContentsRaw)
+                if (chunkIds.isEmpty()) {
+                    return map
+                }
+                val ordered = linkedMapOf<String, String>()
+                chunkIds.forEach { chunkId ->
+                    ordered[chunkId] = map[chunkId] ?: "[Missing content for chunk $chunkId]"
+                }
+                map.forEach { (chunkId, content) ->
+                    if (chunkId !in ordered) {
+                        ordered[chunkId] = content
+                    }
+                }
+                return ordered
+            }
+
+            is List<*> -> {
+                if (chunkIds.isEmpty()) {
+                    return emptyMap()
+                }
+                val contentValues = chunkContentsRaw.map { value -> value?.toString().orEmpty() }
+                return chunkIds
+                    .mapIndexed { index, chunkId ->
+                        val content = contentValues.getOrNull(index)?.takeIf { it.isNotBlank() } ?: "[Missing content for chunk $chunkId]"
+                        chunkId to content
+                    }.toMap(linkedMapOf())
+            }
+
+            else -> {
+                return emptyMap()
+            }
+        }
+    }
+
+    private fun parseStringMap(raw: Any?): Map<String, String> {
         if (raw !is Map<*, *>) {
             return emptyMap()
         }
-
         return raw.entries
             .filter { (key, value) -> key != null && value != null }
             .associate { (key, value) -> key.toString() to value.toString() }

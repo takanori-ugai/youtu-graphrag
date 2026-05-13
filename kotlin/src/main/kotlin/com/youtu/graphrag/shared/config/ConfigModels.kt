@@ -68,7 +68,6 @@ data class EmbeddingsConfig(
     val modelName: String = "all-MiniLM-L6-v2",
     val baseUrl: String = "https://api.openai.com/v1",
     val dimensions: Int = 384,
-    val exportPtCache: Boolean = false,
     val device: String = "cpu",
     val batchSize: Int = 32,
     val maxLength: Int = 512,

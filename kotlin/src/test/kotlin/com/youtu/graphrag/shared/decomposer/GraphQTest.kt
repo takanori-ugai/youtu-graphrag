@@ -2,6 +2,10 @@ package com.youtu.graphrag.shared.decomposer
 
 import com.youtu.graphrag.shared.config.ConfigManager
 import com.youtu.graphrag.shared.llm.LlmClient
+import java.nio.file.Files
+import kotlin.io.path.createDirectories
+import kotlin.io.path.pathString
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -100,6 +104,57 @@ class GraphQTest {
         assertTrue((involvedTypes["nodes"] as List<*>).isEmpty())
         assertTrue((involvedTypes["relations"] as List<*>).isEmpty())
         assertTrue((involvedTypes["attributes"] as List<*>).isEmpty())
+    }
+
+    @Test
+    fun `decompose uses inline fallback template when prompts are missing from config`() {
+        val root = Files.createTempDirectory("graphrag-graphq-minimal-config")
+        val dataDir = root.resolve("data/demo").also { it.createDirectories() }
+        val schemaDir = root.resolve("schemas").also { it.createDirectories() }
+        val outputDir = root.resolve("output").also { it.createDirectories() }
+        val configDir = root.resolve("config").also { it.createDirectories() }
+
+        val corpusPath = dataDir.resolve("demo_corpus.json").also { it.writeText("[]") }
+        val qaPath = dataDir.resolve("demo.json").also { it.writeText("[]") }
+        val schemaPath = schemaDir.resolve("demo.json").also { it.writeText("{\"Nodes\":[]}") }
+        val configPath = configDir.resolve("base_config.yaml")
+        configPath.writeText(
+            """
+            datasets:
+              demo:
+                corpus_path: ${corpusPath.pathString}
+                qa_path: ${qaPath.pathString}
+                schema_path: ${schemaPath.pathString}
+                graph_output: ${outputDir.resolve("graphs/demo_new.json").pathString}
+            triggers:
+              mode: noagent
+            construction:
+              mode: noagent
+            retrieval:
+              top_k_filter: 5
+            output:
+              base_dir: ${outputDir.pathString}
+            """.trimIndent(),
+        )
+
+        val config = ConfigManager(configPath.pathString)
+        var observedPrompt = ""
+        val graphQ =
+            GraphQ(
+                datasetName = "demo",
+                config = config,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String {
+                            observedPrompt = prompt
+                            return ""
+                        }
+                    },
+            )
+
+        graphQ.decompose("Who leads Project Alpha?", schemaPath.pathString)
+
+        assertTrue(observedPrompt.contains("decompose", ignoreCase = true))
     }
 
     private fun emptyLlmClient(): LlmClient =

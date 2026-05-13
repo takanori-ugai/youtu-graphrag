@@ -86,6 +86,11 @@ data class UploadResult(
     val filesCount: Int? = null,
 )
 
+data class UploadProgressUpdate(
+    val progress: Int,
+    val message: String,
+)
+
 class DatasetFileService(
     private val rootDir: Path = Path.of("."),
     private val clock: Clock = Clock.systemDefaultZone(),
@@ -146,42 +151,58 @@ class DatasetFileService(
         ensureDemoSchemaExists()
     }
 
-    fun uploadFilesFromTemp(tempFiles: List<TempFileInfo>): UploadResult {
+    suspend fun uploadFilesFromTemp(
+        tempFiles: List<TempFileInfo>,
+        onProgress: (suspend (UploadProgressUpdate) -> Unit)? = null,
+    ): UploadResult {
         require(tempFiles.isNotEmpty()) { "No files were provided" }
 
         val datasetName = generateDatasetName(tempFiles.map { it.originalFileName })
         val uploadDir = dataUploadedDir.resolve(datasetName).apply { createDirectories() }
+        val totalFiles = tempFiles.size
 
         val corpusData = mutableListOf<Any>()
         val skippedFiles = mutableListOf<String>()
         var processedCount = 0
 
         try {
-            tempFiles.forEachIndexed { index, tempFile ->
-                val safeFileName = sanitizeUploadFileName(tempFile.originalFileName, index)
-                val filePath = uploadDir.resolve(safeFileName)
-
-                Files.move(tempFile.tempFilePath, filePath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-
-                val extension = safeFileName.substringAfterLast('.', "").lowercase()
-                val extWithDot = if (extension.isEmpty()) "" else ".$extension"
-                if (extWithDot !in ALLOWED_EXTENSIONS) {
-                    skippedFiles.add(safeFileName)
-                    return@forEachIndexed
-                }
-
-                when (extWithDot) {
-                    ".txt", ".md" -> {
-                        val text = decodeBytesWithDetection(Files.readAllBytes(filePath))
-                        corpusData.add(mapOf("title" to safeFileName, "text" to text))
-                        processedCount += 1
+            try {
+                tempFiles.forEachIndexed { index, tempFile ->
+                    val safeFileName = sanitizeUploadFileName(tempFile.originalFileName, index)
+                    val extension = safeFileName.substringAfterLast('.', "").lowercase()
+                    val extWithDot = if (extension.isEmpty()) "" else ".$extension"
+                    if (extWithDot !in ALLOWED_EXTENSIONS) {
+                        skippedFiles.add(safeFileName)
+                        onProgress?.invoke(
+                            UploadProgressUpdate(
+                                progress = uploadProgressForFile(index, totalFiles),
+                                message = "Skipped unsupported file: $safeFileName",
+                            ),
+                        )
+                        return@forEachIndexed
                     }
 
-                    ".json" -> {
-                        val bytes = Files.readAllBytes(filePath)
-                        val decoded = decodeBytesWithDetection(bytes)
-                        runCatching { mapper.readTree(decoded) }
-                            .onSuccess { parsed ->
+                    val filePath = uploadDir.resolve(safeFileName)
+                    Files.move(tempFile.tempFilePath, filePath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+
+                    when (extWithDot) {
+                        ".txt", ".md" -> {
+                            val text = decodeBytesWithDetection(Files.readAllBytes(filePath))
+                            corpusData.add(mapOf("title" to safeFileName, "text" to text))
+                            processedCount += 1
+                            onProgress?.invoke(
+                                UploadProgressUpdate(
+                                    progress = uploadProgressForFile(index, totalFiles),
+                                    message = "Processed $safeFileName",
+                                ),
+                            )
+                        }
+
+                        ".json" -> {
+                            val bytes = Files.readAllBytes(filePath)
+                            val decoded = decodeBytesWithDetection(bytes)
+                            try {
+                                val parsed = mapper.readTree(decoded)
                                 if (parsed.isArray) {
                                     parsed.forEach { node ->
                                         corpusData.add(mapper.convertValue(node, Any::class.java))
@@ -189,61 +210,104 @@ class DatasetFileService(
                                 } else {
                                     corpusData.add(mapper.convertValue(parsed, Any::class.java))
                                 }
-                                processedCount += 1
-                            }.onFailure {
+                            } catch (_: Exception) {
                                 corpusData.add(mapOf("title" to safeFileName, "text" to decoded))
-                                processedCount += 1
                             }
-                    }
-
-                    ".pdf", ".docx", ".doc" -> {
-                        val parsedText = documentParser.parseFile(filePath.toString(), extWithDot)
-                        if (parsedText.isBlank()) {
-                            skippedFiles.add(safeFileName)
-                        } else {
-                            corpusData.add(mapOf("title" to safeFileName, "text" to parsedText))
                             processedCount += 1
+                            onProgress?.invoke(
+                                UploadProgressUpdate(
+                                    progress = uploadProgressForFile(index, totalFiles),
+                                    message = "Processed $safeFileName",
+                                ),
+                            )
+                        }
+
+                        ".pdf", ".docx", ".doc" -> {
+                            val parsedText: String =
+                                try {
+                                    documentParser.parseFile(filePath.toString(), extWithDot)
+                                } catch (error: Exception) {
+                                    logger.warn(error) { "Failed to parse document '$safeFileName'" }
+                                    skippedFiles.add(safeFileName)
+                                    onProgress?.invoke(
+                                        UploadProgressUpdate(
+                                            progress = uploadProgressForFile(index, totalFiles),
+                                            message = "Failed to parse $safeFileName",
+                                        ),
+                                    )
+                                    return@forEachIndexed
+                                }
+
+                            if (parsedText.isBlank()) {
+                                skippedFiles.add(safeFileName)
+                                onProgress?.invoke(
+                                    UploadProgressUpdate(
+                                        progress = uploadProgressForFile(index, totalFiles),
+                                        message = "No text in $safeFileName",
+                                    ),
+                                )
+                            } else {
+                                corpusData.add(mapOf("title" to safeFileName, "text" to parsedText))
+                                processedCount += 1
+                                onProgress?.invoke(
+                                    UploadProgressUpdate(
+                                        progress = uploadProgressForFile(index, totalFiles),
+                                        message = "Parsed $safeFileName",
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
+                val skippedSummary =
+                    if (skippedFiles.isEmpty()) {
+                        ""
+                    } else {
+                        "; skipped: ${skippedFiles.joinToString(", ")}"
+                    }
+                if (processedCount <= 0) {
+                    val message = "No supported files were uploaded. Allowed: .txt, .md, .json, .pdf, .docx, .doc$skippedSummary"
+                    onProgress?.invoke(UploadProgressUpdate(progress = 0, message = message))
+                    throw IllegalArgumentException(message)
+                }
+
+                val corpusPath = uploadDir.resolve("corpus.json")
+                mapper.writerWithDefaultPrettyPrinter().writeValue(corpusPath.toFile(), corpusData)
+
+                val message =
+                    buildString {
+                        append("Files uploaded successfully")
+                        if (skippedFiles.isNotEmpty()) {
+                            append("; skipped unsupported: ")
+                            append(skippedFiles.joinToString(", "))
+                        }
+                    }
+
+                logger.info { "Uploaded dataset '$datasetName' with $processedCount supported file(s)" }
+
+                return UploadResult(
+                    success = true,
+                    message = message,
+                    datasetName = datasetName,
+                    filesCount = processedCount,
+                )
+            } catch (error: Exception) {
+                runCatching {
+                    deleteRecursivelyIfExists(uploadDir, mutableListOf())
+                }.onFailure { cleanupError ->
+                    logger.warn(cleanupError) { "Failed to clean up upload directory after failed upload: $uploadDir" }
+                }
+                throw error
             }
         } finally {
             tempFiles.forEach { it.tempFilePath.deleteIfExists() }
         }
-
-        val skippedSummary =
-            if (skippedFiles.isEmpty()) {
-                ""
-            } else {
-                "; skipped: ${skippedFiles.joinToString(", ")}"
-            }
-        require(processedCount > 0) {
-            "No supported files were uploaded. Allowed: .txt, .md, .json, .pdf, .docx, .doc$skippedSummary"
-        }
-
-        val corpusPath = uploadDir.resolve("corpus.json")
-        mapper.writerWithDefaultPrettyPrinter().writeValue(corpusPath.toFile(), corpusData)
-
-        val message =
-            buildString {
-                append("Files uploaded successfully")
-                if (skippedFiles.isNotEmpty()) {
-                    append("; skipped unsupported: ")
-                    append(skippedFiles.joinToString(", "))
-                }
-            }
-
-        logger.info { "Uploaded dataset '$datasetName' with $processedCount supported file(s)" }
-
-        return UploadResult(
-            success = true,
-            message = message,
-            datasetName = datasetName,
-            filesCount = processedCount,
-        )
     }
 
-    fun uploadFiles(files: List<IncomingFile>): UploadResult {
+    suspend fun uploadFiles(
+        files: List<IncomingFile>,
+        onProgress: (suspend (UploadProgressUpdate) -> Unit)? = null,
+    ): UploadResult {
         require(files.isNotEmpty()) { "No files were provided" }
 
         val tempFiles =
@@ -253,7 +317,15 @@ class DatasetFileService(
                 TempFileInfo(file.fileName, tempFile)
             }
 
-        return uploadFilesFromTemp(tempFiles)
+        return uploadFilesFromTemp(tempFiles, onProgress = onProgress)
+    }
+
+    private fun uploadProgressForFile(
+        index: Int,
+        totalFiles: Int,
+    ): Int {
+        val safeTotal = totalFiles.coerceAtLeast(1)
+        return 10 + ((index + 1) * 80 / safeTotal)
     }
 
     fun getDatasets(): DatasetsResponse {

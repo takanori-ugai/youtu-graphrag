@@ -7,6 +7,7 @@ import com.youtu.graphrag.shared.config.ConfigManager
 import com.youtu.graphrag.shared.graph.GraphRelationship
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Path
+import java.util.Locale
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.readLines
@@ -54,6 +55,11 @@ private data class TripleRecord(
 private data class RetrievalChunk(
     val id: String,
     val text: String,
+)
+
+private data class ChunkRanking(
+    val chunkId: String,
+    val score: Double,
 )
 
 private data class EmbeddingCacheFile(
@@ -243,16 +249,30 @@ class KTRetriever private constructor(
                 vectorScores = vectorChunkScores,
                 topLimit = normalizedTopK,
             )
+        val chunkIdList = chunkIds.map { ranking -> ranking.chunkId }
         val chunkContents =
-            chunkIds.associateWith { chunkId ->
+            chunkIdList.map { chunkId ->
                 chunkById[chunkId].orEmpty()
+            }
+        val chunkContentsById =
+            chunkIdList.associateWith { chunkId ->
+                chunkById[chunkId].orEmpty()
+            }
+        val chunkRetrievalResults =
+            chunkIds.map { ranking ->
+                val content = chunkById[ranking.chunkId].orEmpty()
+                val preview = content.take(200) + if (content.length > 200) "..." else ""
+                val formattedScore = String.format(Locale.US, "%.3f", ranking.score)
+                "[Chunk ${ranking.chunkId}] $preview [score: $formattedScore]"
             }
 
         return mapOf(
             "question" to question,
             "triples" to selectedTripleStrings,
-            "chunk_ids" to chunkIds,
+            "chunk_ids" to chunkIdList,
             "chunk_contents" to chunkContents,
+            "chunk_contents_by_id" to chunkContentsById,
+            "chunk_retrieval_results" to chunkRetrievalResults,
             "top_k" to topK,
             "recall_paths" to recallPaths,
             "involved_types" to involvedTypes,
@@ -509,7 +529,7 @@ class KTRetriever private constructor(
         questionKeywords: Set<String>,
         vectorScores: Map<String, Double>,
         topLimit: Int,
-    ): List<String> {
+    ): List<ChunkRanking> {
         if (chunkIds.isEmpty()) {
             return emptyList()
         }
@@ -533,7 +553,7 @@ class KTRetriever private constructor(
                 compareByDescending<Triple<String, Double, Int>> { value -> value.second }
                     .thenBy { value -> value.third },
             ).take(topLimit)
-            .map { value -> value.first }
+            .map { value -> ChunkRanking(chunkId = value.first, score = value.second) }
     }
 
     private fun keywordMatchCount(
@@ -613,8 +633,6 @@ private class IndexBuilder(
     private val chunkCacheFileName = "chunk_embedding_cache.json"
     private val tripleCacheNpzFileName = "triple_embedding_cache.npz"
     private val chunkCacheNpzFileName = "chunk_embedding_cache.npz"
-    private val tripleCachePtFileName = "triple_embedding_cache.pt"
-    private val chunkCachePtFileName = "chunk_embedding_cache.pt"
 
     fun loadTriples(graphFile: Path): List<TripleRecord> {
         if (!graphFile.exists()) {
@@ -703,10 +721,9 @@ private class IndexBuilder(
         val expectedKeys = tripleRecords.map { record -> record.serialized }.toSet()
         val cachePath = resolveCacheFile(tripleCacheFileName)
         val cacheNpzPath = resolveCacheFile(tripleCacheNpzFileName)
-        val cachePtPath = resolveCacheFile(tripleCachePtFileName)
         val cachedByKey =
             if (config.retrieval.enableCaching) {
-                loadEmbeddingCache(cachePath, cacheNpzPath, cachePtPath)
+                loadEmbeddingCache(cachePath, cacheNpzPath)
             } else {
                 mutableMapOf()
             }
@@ -733,9 +750,8 @@ private class IndexBuilder(
                 changed = true
             }
 
-            val needsPtExport = config.embeddings.exportPtCache && !cachePtPath.exists()
-            if (changed || !cachePath.exists() || !cacheNpzPath.exists() || needsPtExport) {
-                saveEmbeddingCache(cachePath, cacheNpzPath, cachePtPath, cachedByKey)
+            if (changed || !cachePath.exists() || !cacheNpzPath.exists()) {
+                saveEmbeddingCache(cachePath, cacheNpzPath, cachedByKey)
             }
         }
 
@@ -753,10 +769,9 @@ private class IndexBuilder(
         val expectedKeys = chunkRecords.map { chunk -> chunk.id }.toSet()
         val cachePath = resolveCacheFile(chunkCacheFileName)
         val cacheNpzPath = resolveCacheFile(chunkCacheNpzFileName)
-        val cachePtPath = resolveCacheFile(chunkCachePtFileName)
         val cachedByKey =
             if (config.retrieval.enableCaching) {
-                loadEmbeddingCache(cachePath, cacheNpzPath, cachePtPath)
+                loadEmbeddingCache(cachePath, cacheNpzPath)
             } else {
                 mutableMapOf()
             }
@@ -783,9 +798,8 @@ private class IndexBuilder(
                 changed = true
             }
 
-            val needsPtExport = config.embeddings.exportPtCache && !cachePtPath.exists()
-            if (changed || !cachePath.exists() || !cacheNpzPath.exists() || needsPtExport) {
-                saveEmbeddingCache(cachePath, cacheNpzPath, cachePtPath, cachedByKey)
+            if (changed || !cachePath.exists() || !cacheNpzPath.exists()) {
+                saveEmbeddingCache(cachePath, cacheNpzPath, cachedByKey)
             }
         }
 
@@ -795,7 +809,6 @@ private class IndexBuilder(
     fun loadEmbeddingCache(
         cachePath: Path,
         cacheNpzPath: Path,
-        cachePtPath: Path,
     ): MutableMap<String, FloatArray> {
         if (cacheNpzPath.exists()) {
             val npzVectors =
@@ -807,35 +820,6 @@ private class IndexBuilder(
                 }
             if (npzVectors.isNotEmpty()) {
                 return npzVectors.toMutableMap()
-            }
-        }
-
-        if (cachePtPath.exists()) {
-            val ptNpzVectors =
-                runCatching {
-                    NpzEmbeddingCache.read(cachePtPath, expectedDimensions = embedder.dimensions)
-                }.getOrElse {
-                    emptyMap()
-                }
-            if (ptNpzVectors.isNotEmpty()) {
-                return ptNpzVectors.toMutableMap()
-            }
-
-            val converted =
-                TorchCacheInterop.tryConvertPtToNpz(
-                    ptPath = cachePtPath,
-                    npzPath = cacheNpzPath,
-                )
-            if (converted) {
-                val convertedVectors =
-                    runCatching {
-                        NpzEmbeddingCache.read(cacheNpzPath, expectedDimensions = embedder.dimensions)
-                    }.getOrElse {
-                        emptyMap()
-                    }
-                if (convertedVectors.isNotEmpty()) {
-                    return convertedVectors.toMutableMap()
-                }
             }
         }
 
@@ -871,7 +855,6 @@ private class IndexBuilder(
     fun saveEmbeddingCache(
         cachePath: Path,
         cacheNpzPath: Path,
-        cachePtPath: Path,
         vectorsByKey: Map<String, FloatArray>,
     ) {
         runCatching {
@@ -895,17 +878,6 @@ private class IndexBuilder(
             )
         }.onFailure { error ->
             logger.warn(error) { "Failed to persist NPZ embedding cache to $cacheNpzPath" }
-        }
-
-        if (config.embeddings.exportPtCache) {
-            val converted =
-                TorchCacheInterop.tryConvertNpzToPt(
-                    npzPath = cacheNpzPath,
-                    ptPath = cachePtPath,
-                )
-            if (!converted) {
-                logger.info { "PT embedding cache export skipped for $cachePtPath (python3+torch not available)." }
-            }
         }
     }
 

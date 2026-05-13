@@ -16,16 +16,23 @@ import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import java.nio.file.Path
+import java.util.Locale
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.listDirectoryEntries
 import kotlin.system.exitProcess
+import kotlin.system.measureTimeMillis
 
 data class QaItem(
     val question: String,
     val referenceAnswer: String? = null,
+)
+
+private data class EvalOutcome(
+    val result: String?,
+    val method: String,
 )
 
 @Command(
@@ -157,18 +164,33 @@ class MainCommand(
                     )
                 var evaluatedCount = 0
                 var correctCount = 0
+                var totalAnswerTimeSeconds = 0.0
 
                 val qaResults =
                     runBlocking {
                         val results = mutableListOf<Map<String, Any?>>()
                         qaItems.forEachIndexed { index, qaItem ->
                             try {
-                                val response =
-                                    qaService.answerQuestion(
-                                        datasetName = datasetName,
+                                var responseAnswer = ""
+                                lateinit var answered: com.youtu.graphrag.server.api.contracts.QuestionResponse
+                                val elapsedMs =
+                                    measureTimeMillis {
+                                        answered =
+                                            qaService.answerQuestion(
+                                                datasetName = datasetName,
+                                                question = qaItem.question,
+                                            )
+                                        responseAnswer = answered.answer
+                                    }
+                                val elapsedSeconds = elapsedMs / 1000.0
+                                totalAnswerTimeSeconds += elapsedSeconds
+                                val evalOutcome =
+                                    computeEvalResult(
                                         question = qaItem.question,
+                                        referenceAnswer = qaItem.referenceAnswer,
+                                        generatedAnswer = responseAnswer,
                                     )
-                                val evalResult = computeEvalResult(qaItem.referenceAnswer, response.answer)
+                                val evalResult = evalOutcome.result
                                 if (evalResult != null) {
                                     evaluatedCount += 1
                                     if (evalResult == "1") {
@@ -180,13 +202,15 @@ class MainCommand(
                                     mapOf(
                                         "question" to qaItem.question,
                                         "reference_answer" to qaItem.referenceAnswer,
-                                        "answer" to response.answer,
+                                        "answer" to answered.answer,
                                         "eval_result" to evalResult,
-                                        "sub_questions" to response.subQuestions,
-                                        "retrieved_triples" to response.retrievedTriples,
-                                        "retrieved_chunks" to response.retrievedChunks,
+                                        "eval_method" to evalOutcome.method,
+                                        "answer_time_seconds" to elapsedSeconds,
+                                        "sub_questions" to answered.subQuestions,
+                                        "retrieved_triples" to answered.retrievedTriples,
+                                        "retrieved_chunks" to answered.retrievedChunks,
                                         "reasoning_steps" to
-                                            response.reasoningSteps.map { step ->
+                                            answered.reasoningSteps.map { step ->
                                                 mapOf(
                                                     "type" to step.type,
                                                     "question" to step.question,
@@ -198,10 +222,17 @@ class MainCommand(
                                                     "thought" to step.thought,
                                                 )
                                             },
-                                        "visualization_data" to response.visualizationData.toString(),
-                                        "triples_count" to response.retrievedTriples.size,
-                                        "chunks_count" to response.retrievedChunks.size,
+                                        "visualization_data" to answered.visualizationData.toString(),
+                                        "triples_count" to answered.retrievedTriples.size,
+                                        "chunks_count" to answered.retrievedChunks.size,
                                     )
+                                logger.info { "========== Original Question: ${qaItem.question} ==========" }
+                                logger.info { "Gold Answer: ${qaItem.referenceAnswer.orEmpty()}" }
+                                logger.info { "Generated Answer: ${answered.answer}" }
+                                if (evalResult != null) {
+                                    val modeTag = if (config.triggers.mode == "agent") "Agent" else "No agent"
+                                    logger.info { "$modeTag mode eval result: $evalResult (${evalOutcome.method})" }
+                                }
                                 logger.info {
                                     "Answered question ${index + 1}/${qaItems.size} for dataset '$datasetName'"
                                 }
@@ -217,14 +248,21 @@ class MainCommand(
                         results
                     }
 
+                val answeredCount = qaResults.size
                 if (evaluatedCount > 0) {
                     val accuracy = correctCount.toDouble() / evaluatedCount.toDouble() * 100.0
                     logger.info {
                         "Evaluation summary for '$datasetName': $correctCount/$evaluatedCount correct (${String.format(
-                            java.util.Locale.ROOT,
+                            Locale.ROOT,
                             "%.2f",
                             accuracy,
                         )}%)"
+                    }
+                }
+                if (answeredCount > 0) {
+                    val averageSeconds = totalAnswerTimeSeconds / answeredCount.toDouble()
+                    logger.info {
+                        "Average time taken for '$datasetName': ${String.format(Locale.ROOT, "%.3f", averageSeconds)} seconds"
                     }
                 }
 
@@ -232,6 +270,32 @@ class MainCommand(
                 val outputFile = logsDir.resolve("${datasetName}_qa_results.json")
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(outputFile.toFile(), qaResults)
                 logger.info { "Saved QA results for '$datasetName' to $outputFile" }
+                val summaryFile = logsDir.resolve("${datasetName}_qa_summary.json")
+                objectMapper.writerWithDefaultPrettyPrinter().writeValue(
+                    summaryFile.toFile(),
+                    mapOf(
+                        "dataset" to datasetName,
+                        "mode" to config.triggers.mode,
+                        "total_questions" to qaItems.size,
+                        "answered_questions" to answeredCount,
+                        "evaluated_questions" to evaluatedCount,
+                        "correct_answers" to correctCount,
+                        "accuracy" to
+                            if (evaluatedCount > 0) {
+                                correctCount.toDouble() / evaluatedCount.toDouble()
+                            } else {
+                                null
+                            },
+                        "total_answer_time_seconds" to totalAnswerTimeSeconds,
+                        "average_answer_time_seconds" to
+                            if (answeredCount > 0) {
+                                totalAnswerTimeSeconds / answeredCount.toDouble()
+                            } else {
+                                null
+                            },
+                    ),
+                )
+                logger.info { "Saved QA summary for '$datasetName' to $summaryFile" }
             } catch (error: Exception) {
                 logger.error(error) { "Retrieval workflow failed for dataset '$datasetName'" }
             }
@@ -287,28 +351,75 @@ class MainCommand(
     }
 
     private fun computeEvalResult(
+        question: String,
         referenceAnswer: String?,
         generatedAnswer: String,
-    ): String? {
+    ): EvalOutcome {
         val reference = referenceAnswer?.trim().orEmpty()
         if (reference.isBlank()) {
-            return null
+            return EvalOutcome(result = null, method = "skipped_no_reference")
+        }
+
+        val llmEval = evaluateWithLlm(question = question, referenceAnswer = reference, generatedAnswer = generatedAnswer)
+        if (llmEval != null) {
+            return EvalOutcome(result = llmEval, method = "llm")
         }
 
         val normalizedReference = normalizeForEval(reference)
         val normalizedGenerated = normalizeForEval(generatedAnswer)
         if (normalizedReference.isBlank() || normalizedGenerated.isBlank()) {
-            return "0"
+            return EvalOutcome(result = "0", method = "heuristic")
         }
 
-        return if (
-            normalizedReference == normalizedGenerated ||
-            normalizedGenerated.contains(normalizedReference) ||
-            normalizedReference.contains(normalizedGenerated)
-        ) {
+        val result =
+            if (
+                normalizedReference == normalizedGenerated ||
+                normalizedGenerated.contains(normalizedReference) ||
+                normalizedReference.contains(normalizedGenerated)
+            ) {
+                "1"
+            } else {
+                "0"
+            }
+        return EvalOutcome(result = result, method = "heuristic")
+    }
+
+    private fun evaluateWithLlm(
+        question: String,
+        referenceAnswer: String,
+        generatedAnswer: String,
+    ): String? {
+        val prompt =
+            """
+            You are an expert evaluator. Your task is to determine if the predicted answer is correct based on the question and gold answer.
+            The criteria should be reasonable, not too strict or too lenient.
+
+            Question: $question
+            Gold Answer: $referenceAnswer
+            Predicted Answer: $generatedAnswer
+
+            Return only "1" (correct) or "0" (incorrect):
+            """.trimIndent()
+
+        val llmOutput =
+            runCatching { llmClient.complete(prompt).trim() }.getOrElse { error ->
+                logger.warn(error) { "LLM evaluator call failed; falling back to heuristic evaluation." }
+                return null
+            }
+        if (llmOutput.isBlank()) {
+            return null
+        }
+
+        val exactToken = Regex("\\b[01]\\b").find(llmOutput)?.value
+        if (exactToken != null) {
+            return exactToken
+        }
+        return if ("1" in llmOutput && "0" !in llmOutput) {
             "1"
-        } else {
+        } else if ("0" in llmOutput && "1" !in llmOutput) {
             "0"
+        } else {
+            null
         }
     }
 
