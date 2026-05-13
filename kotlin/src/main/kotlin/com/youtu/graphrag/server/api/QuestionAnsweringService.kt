@@ -36,6 +36,7 @@ private data class SubQuestionRetrieval(
     val index: Int,
     val subQuestionText: String,
     val triples: List<String>,
+    val triplesFormatted: List<String>,
     val chunkIds: List<String>,
     val chunkContents: Map<String, String>,
     val processingTime: Double,
@@ -102,7 +103,9 @@ class QuestionAnsweringService(
         )
 
         val allTriples = linkedSetOf<String>()
-        val chunkById = linkedMapOf<String, String>()
+        val allTriplesFormatted = linkedSetOf<String>()
+        val chunkById = mutableMapOf<String, String>()
+
         val reasoningSteps = mutableListOf<ReasoningStep>()
 
         val subQuestionRetrievals =
@@ -116,6 +119,7 @@ class QuestionAnsweringService(
 
         subQuestionRetrievals.forEach { retrieval ->
             retrieval.triples.forEach { triple -> allTriples.add(triple) }
+            retrieval.triplesFormatted.forEach { triple -> allTriplesFormatted.add(triple) }
             retrieval.chunkIds.forEach { chunkId ->
                 val chunkContent = retrieval.chunkContents[chunkId]
                 if (chunkContent != null) {
@@ -179,8 +183,19 @@ class QuestionAnsweringService(
 
             for (stepIndex in 1..maxSteps) {
                 var thought = ""
-                val triplesSnapshotBefore = allTriples.toList()
-                val chunksSnapshotBefore = chunkById.values.toList()
+                val triplesSnapshotBefore =
+                    if (allTriplesFormatted.size <= 20) {
+                        allTriplesFormatted.toList()
+                    } else {
+                        allTriplesFormatted.take(10) + allTriplesFormatted.toList().takeLast(10)
+                    }
+                val chunksSnapshotBefore =
+                    if (chunkById.size <= 10) {
+                        chunkById.values.toList()
+                    } else {
+                        chunkById.values.take(5) + chunkById.values.toList().takeLast(5)
+                    }
+
                 val stepElapsedMs =
                     measureTimeMillis {
                         val loopContext =
@@ -197,8 +212,8 @@ class QuestionAnsweringService(
                                 step = stepIndex,
                             )
                         val heuristicFallback =
-                            if (triplesSnapshotBefore.isNotEmpty() || chunksSnapshotBefore.isNotEmpty()) {
-                                "So the answer is: ${synthesizeAnswer(triplesSnapshotBefore, chunksSnapshotBefore)}"
+                            if (allTriples.isNotEmpty() || chunksSnapshotBefore.isNotEmpty()) {
+                                "So the answer is: ${synthesizeAnswer(allTriples.toList(), chunksSnapshotBefore)}"
                             } else {
                                 "The new query is: ${buildFollowUpQuery(question, currentQuery, thoughts)}"
                             }
@@ -265,14 +280,28 @@ class QuestionAnsweringService(
                 mergeRetrieval(
                     retrievalResults = additionalRetrieval,
                     allTriples = allTriples,
+                    allTriplesFormatted = allTriplesFormatted,
                     chunkById = chunkById,
                 )
             }
         }
 
+        // Final answer: keep both initial and latest retrieval results to prevent context starvation in IRCoT
         val finalTriples = allTriples.take(20)
-        val finalChunks = chunkById.values.take(10)
-        val finalContext = ktRetriever.buildKnowledgeContext(finalTriples, finalChunks)
+        val finalTriplesFormatted =
+            if (allTriplesFormatted.size <= 20) {
+                allTriplesFormatted.toList()
+            } else {
+                allTriplesFormatted.take(10) + allTriplesFormatted.toList().takeLast(10)
+            }
+        val finalChunks =
+            if (chunkById.size <= 10) {
+                chunkById.values.toList()
+            } else {
+                chunkById.values.take(5) + chunkById.values.toList().takeLast(5)
+            }
+
+        val finalContext = ktRetriever.buildKnowledgeContext(finalTriplesFormatted, finalChunks)
         finalAnswer =
             generateAnswerWithFallback(
                 prompt = ktRetriever.generatePrompt(question, finalContext),
@@ -403,6 +432,7 @@ class QuestionAnsweringService(
             index = index,
             subQuestionText = subQuestionText,
             triples = parseStringList(retrievalResultsHolder["triples"]),
+            triplesFormatted = parseStringList(retrievalResultsHolder["triples_formatted"]),
             chunkIds = chunkIds,
             chunkContents =
                 parseChunkContentMap(
@@ -417,9 +447,11 @@ class QuestionAnsweringService(
     private fun mergeRetrieval(
         retrievalResults: Map<String, Any>,
         allTriples: MutableSet<String>,
+        allTriplesFormatted: MutableSet<String>,
         chunkById: MutableMap<String, String>,
     ) {
         val triples = parseStringList(retrievalResults["triples"])
+        val triplesFormatted = parseStringList(retrievalResults["triples_formatted"])
         val chunkIds =
             parseStringList(retrievalResults["chunk_ids"]).ifEmpty {
                 parseStringMap(retrievalResults["chunk_contents_by_id"]).keys.toList()
@@ -432,6 +464,7 @@ class QuestionAnsweringService(
             )
 
         triples.forEach { triple -> allTriples.add(triple) }
+        triplesFormatted.forEach { triple -> allTriplesFormatted.add(triple) }
         chunkIds.forEach { chunkId ->
             val content = chunkContents[chunkId]
             if (content != null) {

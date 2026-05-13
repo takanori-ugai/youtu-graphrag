@@ -129,7 +129,7 @@ fun Application.youtuGraphRagModule() {
 
         webSocket("/ws/{client_id}") {
             val clientId = call.parameters["client_id"]
-            if (clientId.isNullOrBlank() || clientId == "default") {
+            if (clientId.isNullOrBlank()) {
                 close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing or invalid client_id"))
                 return@webSocket
             }

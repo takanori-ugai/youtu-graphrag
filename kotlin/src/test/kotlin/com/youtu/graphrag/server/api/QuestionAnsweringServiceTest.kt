@@ -227,7 +227,7 @@ class QuestionAnsweringServiceTest {
                     object : LlmClient {
                         override fun complete(prompt: String): String =
                             when {
-                                prompt.contains("decompose", ignoreCase = true) -> {
+                                prompt.contains("decomposition", ignoreCase = true) || prompt.contains("decompose", ignoreCase = true) -> {
                                     """
                                     {
                                       "sub_questions": [{"sub-question": "Who leads Project Alpha?"}],
@@ -236,8 +236,8 @@ class QuestionAnsweringServiceTest {
                                     """.trimIndent()
                                 }
 
-                                prompt.contains("The new query is:", ignoreCase = true) -> {
-                                    "I need one more clue."
+                                prompt.contains("ircot", ignoreCase = true) || prompt.contains("Previous Thoughts") -> {
+                                    "IRCoT step results. I don't have a new query."
                                 }
 
                                 else -> {

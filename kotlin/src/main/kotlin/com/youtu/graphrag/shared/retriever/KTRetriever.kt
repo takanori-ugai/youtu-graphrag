@@ -24,6 +24,15 @@ private data class TripleRecord(
     val serialized: String
         get() = "[\"${escape(source)}\", \"${escape(relation)}\", \"${escape(target)}\"]"
 
+    val contextFormat: String
+        get() = "(${source}${formatProps(sourceProperties)}, $relation, ${target}${formatProps(targetProperties)})"
+
+    private fun formatProps(props: Map<String, String>): String {
+        val filtered = props.filterKeys { it != "name" && it != "chunk id" }
+        if (filtered.isEmpty()) return ""
+        return " " + filtered.toString()
+    }
+
     val searchableText: String
         get() =
             buildString {
@@ -206,6 +215,7 @@ class KTRetriever private constructor(
                 topLimit = normalizedTopK,
             )
         val selectedTripleStrings = selectedTriples.map { record -> record.serialized }
+        val selectedTripleFormatted = selectedTriples.map { record -> record.contextFormat }
 
         val chunkIdsFromTriples =
             linkedSetOf<String>().apply {
@@ -269,6 +279,7 @@ class KTRetriever private constructor(
         return mapOf(
             "question" to question,
             "triples" to selectedTripleStrings,
+            "triples_formatted" to selectedTripleFormatted,
             "chunk_ids" to chunkIdList,
             "chunk_contents" to chunkContents,
             "chunk_contents_by_id" to chunkContentsById,

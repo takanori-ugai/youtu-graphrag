@@ -222,7 +222,7 @@ class MainCommand(
                                                     "thought" to step.thought,
                                                 )
                                             },
-                                        "visualization_data" to answered.visualizationData.toString(),
+                                        "visualization_data" to objectMapper.readTree(answered.visualizationData.toString()),
                                         "triples_count" to answered.retrievedTriples.size,
                                         "chunks_count" to answered.retrievedChunks.size,
                                     )
