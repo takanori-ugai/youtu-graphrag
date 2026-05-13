@@ -104,7 +104,7 @@ class QuestionAnsweringServiceTest {
             }
 
         assertTrue(response.answer.isNotBlank())
-        assertTrue(response.retrievedTriples.isNotEmpty())
+        assertTrue(response.retrievedTriples.isEmpty())
     }
 
     @Test

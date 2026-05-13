@@ -98,8 +98,40 @@ class LlmClientTest {
             val output = client.complete("default provider prompt")
 
             assertEquals("default provider response", output)
-            assertTrue(requestBody.contains("deepseek-chat"))
+            assertTrue(requestBody.contains("gpt-4.1-mini"))
             assertTrue(requestBody.contains("default provider prompt"))
+        } finally {
+            stopMockServer(server)
+        }
+    }
+
+    @Test
+    fun `factory openai compatible provider uses deepseek defaults`() {
+        var requestBody = ""
+        val server =
+            createMockServer("/v1/chat/completions") { exchange ->
+                requestBody = exchange.requestBody.bufferedReader().readText()
+                writeChatCompletionResponse(exchange, "compat response")
+            }
+        server.start()
+
+        try {
+            val port = server.address.port
+            val client =
+                LlmClientFactory.fromEnvironment(
+                    env =
+                        mapOf(
+                            "OPENAI_PROVIDER" to "openai_compatible",
+                            "LLM_API_KEY" to "test-key",
+                            "LLM_BASE_URL" to "http://127.0.0.1:$port/v1",
+                        ),
+                )
+
+            val output = client.complete("compat provider prompt")
+
+            assertEquals("compat response", output)
+            assertTrue(requestBody.contains("deepseek-chat"))
+            assertTrue(requestBody.contains("compat provider prompt"))
         } finally {
             stopMockServer(server)
         }

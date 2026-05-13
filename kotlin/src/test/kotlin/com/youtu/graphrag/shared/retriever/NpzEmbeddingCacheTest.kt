@@ -55,4 +55,27 @@ class NpzEmbeddingCacheTest {
 
         assertTrue(loaded.isEmpty())
     }
+
+    @Test
+    fun `npz embedding cache round-trips non ascii keys`() {
+        val root = Files.createTempDirectory("youtu-graphrag-npz-unicode-key-test")
+        val npzPath = root.resolve("triple_embedding_cache.npz")
+        val key = "[\"Messi's goals\", \"compared_to\", \"ディエゴ・マラドーナ⚽\"]"
+        val source = mapOf(key to floatArrayOf(1.0f, 2.0f, 3.0f))
+
+        NpzEmbeddingCache.write(
+            path = npzPath,
+            vectorsByKey = source,
+            expectedDimensions = 3,
+        )
+        val loaded =
+            NpzEmbeddingCache.read(
+                path = npzPath,
+                expectedDimensions = 3,
+            )
+
+        assertEquals(1, loaded.size)
+        assertTrue(loaded.containsKey(key))
+        assertTrue(loaded.getValue(key).contentEquals(source.getValue(key)))
+    }
 }

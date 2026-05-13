@@ -76,7 +76,7 @@ class RetrievalFixtureParityTest {
                     rootDir = root,
                 )
 
-            val result =
+            val (result, retrievalTime) =
                 retriever.processRetrievalResults(
                     question = fixture.question,
                     involvedTypes = fixture.involvedTypes,
@@ -94,12 +94,8 @@ class RetrievalFixtureParityTest {
             val chunkRetrievalLines =
                 (result["chunk_retrieval_results"] as? List<*>)?.map { value -> value.toString() }
                     ?: error("Expected 'chunk_retrieval_results' list in result for fixture '${fixture.name}'")
-            val retrievalStrategy =
-                result["retrieval_strategy"]?.toString()
-                    ?: error("Expected 'retrieval_strategy' in result for fixture '${fixture.name}'")
-            val resultTopK = (result["top_k"] as? Number)?.toInt()
-            val resultRecallPaths = (result["recall_paths"] as? Number)?.toInt()
 
+            assertTrue(retrievalTime >= 0.0, "retrieval_time should be non-negative for fixture '${fixture.name}'")
             assertEquals(fixture.expected.triples, triples, "triples parity failed for fixture '${fixture.name}'")
             assertEquals(fixture.expected.chunkIds, chunkIds, "chunk_ids parity failed for fixture '${fixture.name}'")
             assertEquals(
@@ -118,12 +114,6 @@ class RetrievalFixtureParityTest {
                     "chunk_retrieval_results parity failed for fixture '${fixture.name}': expected prefix '$expectedPrefix', actual '$actualLine'",
                 )
             }
-            assertTrue(
-                retrievalStrategy.startsWith(fixture.expected.retrievalStrategyPrefix),
-                "retrieval_strategy parity failed for fixture '${fixture.name}': '$retrievalStrategy'",
-            )
-            assertEquals(fixture.topK, resultTopK, "top_k metadata mismatch for fixture '${fixture.name}'")
-            assertEquals(fixture.recallPaths, resultRecallPaths, "recall_paths metadata mismatch for fixture '${fixture.name}'")
         }
     }
 

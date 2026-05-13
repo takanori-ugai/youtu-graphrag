@@ -368,13 +368,8 @@ class KTBuilder(
                     entityByName = entityByName,
                     seenEntityTriples = seenEntityTriples,
                 )
-
             if (extractedCount == 0) {
-                addFallbackRelationships(
-                    chunk = chunk,
-                    relationships = relationships,
-                    entityByName = entityByName,
-                )
+                logger.debug { "No extraction relationships generated for chunk ${chunk.id}" }
             }
         }
 
@@ -657,57 +652,6 @@ class KTBuilder(
         }
 
         return addedCount
-    }
-
-    private fun addFallbackRelationships(
-        chunk: ChunkRecord,
-        relationships: MutableList<GraphRelationship>,
-        entityByName: MutableMap<String, GraphNode>,
-    ) {
-        val entityName = chunk.title.ifBlank { "chunk_${chunk.id}" }
-        val entityNode =
-            findOrCreateEntityNode(
-                entityName = entityName,
-                chunkId = chunk.id,
-                entityType = null,
-                entityByName = entityByName,
-            )
-
-        val attributeNode =
-            GraphNode(
-                label = "attribute",
-                properties =
-                    mapOf(
-                        "name" to "length: ${chunk.text.length}",
-                        "chunk id" to chunk.id,
-                    ),
-            )
-        relationships.add(
-            GraphRelationship(
-                startNode = entityNode,
-                relation = "has_attribute",
-                endNode = attributeNode,
-            ),
-        )
-
-        extractKeyword(chunk.text)?.let { keyword ->
-            val keywordNode =
-                GraphNode(
-                    label = "keyword",
-                    properties =
-                        mapOf(
-                            "name" to keyword,
-                            "chunk id" to chunk.id,
-                        ),
-                )
-            relationships.add(
-                GraphRelationship(
-                    startNode = entityNode,
-                    relation = "has_keyword",
-                    endNode = keywordNode,
-                ),
-            )
-        }
     }
 
     private fun findOrCreateEntityNode(

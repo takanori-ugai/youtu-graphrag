@@ -238,7 +238,7 @@ class KTBuilderTest {
             )
 
         val relationships = builder.buildKnowledgeGraph(corpusPath.pathString)
-        assertTrue(relationships.isNotEmpty())
+        assertTrue(relationships.isEmpty())
         assertTrue(observedPrompt.startsWith("NOVEL::"))
     }
 
@@ -305,7 +305,9 @@ class KTBuilderTest {
         val schemaPath = root.resolve("schemas/demo.json").also { it.parent.createDirectories() }
         val corpusPath = root.resolve("data/treecomm_corpus.json").also { it.parent.createDirectories() }
 
-        schemaPath.writeText("""{"Nodes":["person","organization","location"],"Relations":["works_at","located_in"],"Attributes":["name"]}""")
+        schemaPath.writeText(
+            """{"Nodes":["person","organization","location"],"Relations":["works_at","located_in"],"Attributes":["name"]}""",
+        )
         mapper.writerWithDefaultPrettyPrinter().writeValue(
             corpusPath.toFile(),
             listOf(

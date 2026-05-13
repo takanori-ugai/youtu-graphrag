@@ -41,6 +41,10 @@ class ChatModelLlmClient(
 
 object LlmClientFactory {
     private val logger = KotlinLogging.logger {}
+    private const val DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
+    private const val DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+    private const val DEFAULT_OPENAI_COMPATIBLE_MODEL = "deepseek-chat"
+    private const val DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://api.deepseek.com"
 
     fun fromEnvironment(env: Map<String, String> = System.getenv()): LlmClient {
         val provider = env.firstNonBlank("OPENAI_PROVIDER")?.lowercase() ?: "openai"
@@ -56,20 +60,42 @@ object LlmClientFactory {
             }
 
             "openai" -> {
-                createOpenAiClient(env)
+                createOpenAiClient(
+                    env = env,
+                    defaultModel = DEFAULT_OPENAI_MODEL,
+                    defaultBaseUrl = DEFAULT_OPENAI_BASE_URL,
+                )
+            }
+
+            "openai_compatible",
+            "deepseek",
+            -> {
+                createOpenAiClient(
+                    env = env,
+                    defaultModel = DEFAULT_OPENAI_COMPATIBLE_MODEL,
+                    defaultBaseUrl = DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+                )
             }
 
             else -> {
                 logger.warn { "Unsupported OPENAI_PROVIDER='$provider'. Falling back to OpenAI-compatible mode." }
-                createOpenAiClient(env)
+                createOpenAiClient(
+                    env = env,
+                    defaultModel = DEFAULT_OPENAI_COMPATIBLE_MODEL,
+                    defaultBaseUrl = DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+                )
             }
         }
     }
 
-    private fun createOpenAiClient(env: Map<String, String>): LlmClient {
+    private fun createOpenAiClient(
+        env: Map<String, String>,
+        defaultModel: String,
+        defaultBaseUrl: String,
+    ): LlmClient {
         val apiKey = env.firstNonBlank("LLM_API_KEY", "OPENAI_API_KEY") ?: return NoopLlmClient()
-        val modelName = env.firstNonBlank("LLM_MODEL", "OPENAI_MODEL") ?: "deepseek-chat"
-        val baseUrl = env.firstNonBlank("LLM_BASE_URL", "OPENAI_BASE_URL") ?: "https://api.deepseek.com"
+        val modelName = env.firstNonBlank("LLM_MODEL", "OPENAI_MODEL") ?: defaultModel
+        val baseUrl = env.firstNonBlank("LLM_BASE_URL", "OPENAI_BASE_URL") ?: defaultBaseUrl
 
         val builder =
             OpenAiChatModel

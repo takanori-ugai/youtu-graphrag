@@ -110,7 +110,11 @@ class FastTreeComm {
     }
 
     private fun nodeId(node: GraphNode): String {
-        val fromName = node.properties["name"]?.toString()?.trim().orEmpty()
+        val fromName =
+            node.properties["name"]
+                ?.toString()
+                ?.trim()
+                .orEmpty()
         return fromName.ifBlank { node.label.trim() }
     }
 

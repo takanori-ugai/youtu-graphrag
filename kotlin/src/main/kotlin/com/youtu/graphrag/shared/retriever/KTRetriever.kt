@@ -78,6 +78,12 @@ private data class ChunkRanking(
     val score: Double,
 )
 
+private data class ScoredTriple(
+    val record: TripleRecord,
+    val score: Double,
+    val ordinal: Int,
+)
+
 private data class EmbeddingCacheFile(
     val modelTag: String,
     val dimensions: Int,
@@ -99,7 +105,6 @@ class KTRetriever private constructor(
     private val tripleOrdinalByRecord: Map<TripleRecord, Int>,
     private val chunkRecords: List<RetrievalChunk>,
     private val chunkVectorIndex: SemanticVectorIndex<RetrievalChunk>?,
-    private val chunkOrdinalById: Map<String, Int>,
     private val chunkById: Map<String, String>,
     private val vectorStrategyTag: String,
     private val queryNlp: QueryNlp,
@@ -110,6 +115,9 @@ class KTRetriever private constructor(
     companion object {
         private val logger = KotlinLogging.logger {}
         private val mapper = ObjectMapper().registerKotlinModule()
+        private val EXCLUDED_OUTPUT_RELATIONS = setOf("represented_by", "kw_filter_by")
+        private val RELATION_BONUS_RELATIONS = setOf("is", "was", "has", "had", "contains", "located", "born", "died")
+        private const val MIN_TRIPLE_SCORE = 0.05
 
         fun createAndBuild(
             datasetName: String,
@@ -137,7 +145,6 @@ class KTRetriever private constructor(
             val tripleOrdinal = triples.withIndex().associate { (index, record) -> record to index }
             val chunks = builder.loadChunks(builder.resolvePath("${config.output.chunksDir}/$datasetName.txt"))
             val chunkRecords = chunks.entries.map { (chunkId, text) -> RetrievalChunk(id = chunkId, text = text) }
-            val chunkOrdinal = chunkRecords.withIndex().associate { (index, chunk) -> chunk.id to index }
 
             val tripleVectors = builder.prepareTripleVectors(triples, embedder)
             val chunkVectors = builder.prepareChunkVectors(chunkRecords, embedder)
@@ -177,7 +184,6 @@ class KTRetriever private constructor(
                 tripleOrdinalByRecord = tripleOrdinal,
                 chunkRecords = chunkRecords,
                 chunkVectorIndex = chunkIndex,
-                chunkOrdinalById = chunkOrdinal,
                 chunkById = chunks,
                 vectorStrategyTag = strategyTag,
                 queryNlp = queryNlp,
@@ -188,7 +194,8 @@ class KTRetriever private constructor(
     fun processRetrievalResults(
         question: String,
         involvedTypes: Map<String, List<String>> = emptyMap(),
-    ): Map<String, Any> {
+    ): Pair<Map<String, Any>, Double> {
+        val startNs = System.nanoTime()
         val normalizedTopK = topK.coerceAtLeast(1)
         val vectorSearchK =
             config.retrieval.faiss.searchK
@@ -212,7 +219,7 @@ class KTRetriever private constructor(
             rankedItems(
                 items = retrievalPool,
                 questionKeywords = normalizedQuestionKeywords,
-                topLimit = normalizedTopK,
+                topLimit = minOf(vectorSearchK, retrievalPool.size.coerceAtLeast(1)),
                 textSelector = { record -> record.searchableText },
             )
 
@@ -227,19 +234,27 @@ class KTRetriever private constructor(
             } else {
                 emptyMap()
             }
-        val selectedTriples =
-            rerankTriples(
+        val selectedTripleRankings =
+            rankTriplesPythonCompatible(
                 triples = expandedTriples,
                 questionKeywords = normalizedQuestionKeywords,
                 vectorScores = vectorTripleScores,
                 topLimit = normalizedTopK,
             )
-        val selectedTripleStrings = selectedTriples.map { record -> record.serialized }
-        val selectedTripleFormatted = selectedTriples.map { record -> record.contextFormat }
+        val selectedTripleRaw =
+            selectedTripleRankings
+                .map { ranking -> ranking.record }
+                .filterNot { record -> record.relation.lowercase(Locale.ROOT) in EXCLUDED_OUTPUT_RELATIONS }
+        val selectedTripleFormatted =
+            selectedTripleRaw.map { record ->
+                val score = selectedTripleRankings.firstOrNull { ranking -> ranking.record == record }?.score ?: 0.0
+                formatTripleWithScore(record, score)
+            }
 
         val chunkIdsFromTriples =
             linkedSetOf<String>().apply {
-                selectedTriples.forEach { record ->
+                selectedTripleRankings.forEach { ranking ->
+                    val record = ranking.record
                     record.chunkIds.forEach { chunkId ->
                         if (chunkId in chunkById) {
                             add(chunkId)
@@ -248,74 +263,71 @@ class KTRetriever private constructor(
                 }
             }
 
-        val rankedChunkEntries =
-            rankedItems(
-                items = chunkRecords,
-                questionKeywords = normalizedQuestionKeywords,
-                topLimit = normalizedTopK,
-                textSelector = { chunk -> chunk.text },
-            )
-        val vectorChunkScores =
+        val chunkVectorRankings =
             if (vectorEnabled) {
-                vectorSearchScoresForChunks(
-                    question = enhancedQuestion,
-                    searchLimit = vectorSearchK,
-                )
+                chunkVectorIndex
+                    ?.search(enhancedQuestion, normalizedTopK)
+                    .orEmpty()
+                    .take(normalizedTopK)
+                    .map { hit -> ChunkRanking(chunkId = hit.item.id, score = hit.score) }
             } else {
-                emptyMap()
+                rankedItems(
+                    items = chunkRecords,
+                    questionKeywords = normalizedQuestionKeywords,
+                    topLimit = normalizedTopK,
+                    textSelector = { chunk -> chunk.text },
+                ).map { chunk ->
+                    ChunkRanking(
+                        chunkId = chunk.id,
+                        score = keywordMatchCount(chunk.text, normalizedQuestionKeywords).toDouble(),
+                    )
+                }
             }
 
-        val mergedChunkIds =
+        val chunkRetrievalIds =
             linkedSetOf<String>().apply {
-                addAll(chunkIdsFromTriples)
-                rankedChunkEntries.forEach { chunk -> add(chunk.id) }
-                vectorChunkScores.keys.forEach { chunkId -> add(chunkId) }
+                chunkVectorRankings.forEach { ranking ->
+                    if (ranking.chunkId in chunkById) {
+                        add(ranking.chunkId)
+                    }
+                }
             }
-        val chunkIds =
-            rerankChunks(
-                chunkIds = mergedChunkIds.toList(),
-                tripleBoostChunkIds = chunkIdsFromTriples,
-                questionKeywords = normalizedQuestionKeywords,
-                vectorScores = vectorChunkScores,
-                topLimit = normalizedTopK,
-            )
-        val chunkIdList = chunkIds.map { ranking -> ranking.chunkId }
+
+        val allChunkIds =
+            linkedSetOf<String>().apply {
+                addAll(chunkRetrievalIds)
+                addAll(chunkIdsFromTriples)
+            }
+        val chunkIdList = allChunkIds.toList()
         val chunkContents =
             chunkIdList.map { chunkId ->
                 chunkById[chunkId].orEmpty()
             }
-        val chunkContentsById =
-            chunkIdList.associateWith { chunkId ->
-                chunkById[chunkId].orEmpty()
-            }
         val chunkRetrievalResults =
-            chunkIds.map { ranking ->
+            chunkVectorRankings.map { ranking ->
                 val content = chunkById[ranking.chunkId].orEmpty()
                 val preview = content.take(200) + if (content.length > 200) "..." else ""
                 val formattedScore = String.format(Locale.US, "%.3f", ranking.score)
                 "[Chunk ${ranking.chunkId}] $preview [score: $formattedScore]"
             }
 
-        return mapOf(
-            "question" to question,
-            "enhanced_question" to enhancedQuestion,
-            "query_entities" to nlpAnalysis.entities,
-            "query_keywords" to normalizedQuestionKeywords.toList(),
-            "triples" to selectedTripleStrings,
-            "triples_formatted" to selectedTripleFormatted,
-            "chunk_ids" to chunkIdList,
-            "chunk_contents" to chunkContents,
-            "chunk_contents_by_id" to chunkContentsById,
-            "chunk_retrieval_results" to chunkRetrievalResults,
-            "top_k" to topK,
-            "recall_paths" to recallPaths,
-            "involved_types" to involvedTypes,
-            "retrieval_strategy" to if (vectorEnabled) vectorStrategyTag else "lexical",
-            "mode" to mode,
-        )
+        val retrievalTime = (System.nanoTime() - startNs).toDouble() / 1_000_000_000.0
+        logger.info { "retrieval time: ${String.format(Locale.US, "%.4f", retrievalTime)}" }
+
+        val retrievalResults =
+            mapOf(
+                "triples" to selectedTripleFormatted,
+                "chunk_ids" to chunkIdList,
+                "chunk_contents" to chunkContents,
+                "chunk_retrieval_results" to chunkRetrievalResults,
+            )
+
+        return retrievalResults to retrievalTime
     }
 
     fun enhanceQuery(question: String): String = queryNlp.analyze(question).enhancedQuestion(question)
+
+    fun extractQueryEntities(question: String): List<String> = queryNlp.analyze(question).entities
 
     fun extractQueryKeywords(question: String): List<String> = queryNlp.analyze(question).normalizedKeywordSet().toList()
 
@@ -395,7 +407,7 @@ class KTRetriever private constructor(
         val promptCandidates =
             when (promptSource) {
                 IrcotPromptSource.BACKEND -> listOf("ircot_backend", "ircot")
-                IrcotPromptSource.MAIN -> listOf("ircot_main", "ircot")
+                IrcotPromptSource.MAIN -> listOf("ircot_main")
             }
         val variables =
             mapOf(
@@ -447,7 +459,7 @@ class KTRetriever private constructor(
         promptSource: IrcotPromptSource,
     ): String =
         when (promptSource) {
-            IrcotPromptSource.MAIN ->
+            IrcotPromptSource.MAIN -> {
                 """
                 You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
 
@@ -471,8 +483,9 @@ class KTRetriever private constructor(
 
                 Your reasoning:
                 """.trimIndent()
+            }
 
-            IrcotPromptSource.BACKEND ->
+            IrcotPromptSource.BACKEND -> {
                 """
                 You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
                 Current Question: $originalQuestion
@@ -485,6 +498,7 @@ class KTRetriever private constructor(
                 2. Else propose new query with: The new query is: <query>
                 Your reasoning:
                 """.trimIndent()
+            }
         }
 
     private fun filterTriplesByInvolvedTypes(
@@ -608,76 +622,64 @@ class KTRetriever private constructor(
             .associate { hit -> hit.item to hit.score }
     }
 
-    private fun vectorSearchScoresForChunks(
-        question: String,
-        searchLimit: Int,
-    ): Map<String, Double> =
-        chunkVectorIndex
-            ?.search(question, searchLimit)
-            .orEmpty()
-            .associate { hit -> hit.item.id to hit.score }
-
-    private fun rerankTriples(
+    private fun rankTriplesPythonCompatible(
         triples: List<TripleRecord>,
         questionKeywords: Set<String>,
         vectorScores: Map<TripleRecord, Double>,
         topLimit: Int,
-    ): List<TripleRecord> {
+    ): List<ScoredTriple> {
         if (triples.isEmpty()) {
             return emptyList()
         }
 
         val scored =
-            triples.map { triple ->
-                val lexicalScore = keywordMatchCount(triple.searchableText, questionKeywords).toDouble()
-                val vectorScore = vectorScores[triple] ?: 0.0
-                val combined = lexicalScore + (vectorScore * 2.0)
-                Triple(
-                    triple,
-                    combined,
-                    tripleOrdinalByRecord[triple] ?: Int.MAX_VALUE,
-                )
+            if (vectorScores.isNotEmpty()) {
+                triples.mapNotNull { triple ->
+                    val similarity = vectorScores[triple] ?: return@mapNotNull null
+                    val relationBonus =
+                        if (triple.relation.lowercase(Locale.ROOT) in RELATION_BONUS_RELATIONS) {
+                            0.1
+                        } else {
+                            0.0
+                        }
+                    val finalScore = maxOf(0.0, similarity + relationBonus)
+                    if (finalScore <= MIN_TRIPLE_SCORE) {
+                        return@mapNotNull null
+                    }
+                    ScoredTriple(
+                        record = triple,
+                        score = finalScore,
+                        ordinal = tripleOrdinalByRecord[triple] ?: Int.MAX_VALUE,
+                    )
+                }
+            } else {
+                triples.map { triple ->
+                    val lexicalScore = keywordMatchCount(triple.searchableText, questionKeywords).toDouble()
+                    ScoredTriple(
+                        record = triple,
+                        score = lexicalScore,
+                        ordinal = tripleOrdinalByRecord[triple] ?: Int.MAX_VALUE,
+                    )
+                }
             }
 
-        return scored
-            .sortedWith(
-                compareByDescending<Triple<TripleRecord, Double, Int>> { value -> value.second }
-                    .thenBy { value -> value.third },
-            ).take(topLimit)
-            .map { value -> value.first }
-    }
-
-    private fun rerankChunks(
-        chunkIds: List<String>,
-        tripleBoostChunkIds: Set<String>,
-        questionKeywords: Set<String>,
-        vectorScores: Map<String, Double>,
-        topLimit: Int,
-    ): List<ChunkRanking> {
-        if (chunkIds.isEmpty()) {
+        if (scored.isEmpty()) {
             return emptyList()
         }
 
-        val scored =
-            chunkIds.map { chunkId ->
-                val text = chunkById[chunkId].orEmpty()
-                val lexicalScore = keywordMatchCount(text, questionKeywords).toDouble()
-                val vectorScore = vectorScores[chunkId] ?: 0.0
-                val tripleBoost = if (chunkId in tripleBoostChunkIds) 0.75 else 0.0
-                val combined = lexicalScore + (vectorScore * 2.0) + tripleBoost
-                Triple(
-                    chunkId,
-                    combined,
-                    chunkOrdinalById[chunkId] ?: Int.MAX_VALUE,
-                )
-            }
-
         return scored
             .sortedWith(
-                compareByDescending<Triple<String, Double, Int>> { value -> value.second }
-                    .thenBy { value -> value.third },
+                compareByDescending<ScoredTriple> { value -> value.score }
+                    .thenBy { value -> value.ordinal },
             ).take(topLimit)
-            .map { value -> ChunkRanking(chunkId = value.first, score = value.second) }
+    }
+
+    private fun formatTripleWithScore(
+        triple: TripleRecord,
+        score: Double,
+    ): String {
+        val formattedScore = String.format(Locale.US, "%.3f", score)
+        return "${triple.contextFormat} [score: $formattedScore]"
     }
 
     private fun keywordMatchCount(

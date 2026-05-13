@@ -75,10 +75,9 @@ class RetrieverNlpFixtureParityTest {
                     rootDir = root,
                 )
 
-            val retrieval = retriever.processRetrievalResults(fixture.question)
             val entities =
-                (retrieval["query_entities"] as? List<*>)
-                    .orEmpty()
+                retriever
+                    .extractQueryEntities(fixture.question)
                     .map { value -> value.toString().trim().lowercase() }
                     .filter { value -> value.isNotBlank() }
                     .toSet()
@@ -96,11 +95,15 @@ class RetrieverNlpFixtureParityTest {
 
             assertTrue(
                 entityOverlap >= fixture.minEntityOverlap,
-                "Entity overlap for fixture '${fixture.name}' was ${percent(entityOverlap)} but required ${percent(fixture.minEntityOverlap)}",
+                "Entity overlap for fixture '${fixture.name}' was ${percent(
+                    entityOverlap,
+                )} but required ${percent(fixture.minEntityOverlap)}",
             )
             assertTrue(
                 keywordOverlap >= fixture.minKeywordOverlap,
-                "Keyword overlap for fixture '${fixture.name}' was ${percent(keywordOverlap)} but required ${percent(fixture.minKeywordOverlap)}",
+                "Keyword overlap for fixture '${fixture.name}' was ${percent(
+                    keywordOverlap,
+                )} but required ${percent(fixture.minKeywordOverlap)}",
             )
 
             fixture.requiredKeywords.map { it.lowercase() }.forEach { required ->

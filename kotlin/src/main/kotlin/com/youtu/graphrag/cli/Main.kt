@@ -228,9 +228,35 @@ class MainCommand(
                                         "triples_count" to answered.retrievedTriples.size,
                                         "chunks_count" to answered.retrievedChunks.size,
                                     )
+                                val initialAnswerThought =
+                                    answered.reasoningSteps
+                                        .firstOrNull { step -> step.type == "initial_answer" }
+                                        ?.thought
+                                        .orEmpty()
+                                val ircotThoughts =
+                                    answered.reasoningSteps
+                                        .filter { step -> step.type == "ircot_step" }
+                                        .mapNotNull { step -> step.thought?.trim()?.takeIf { value -> value.isNotBlank() } }
+                                val thoughtProcess =
+                                    buildList {
+                                        initialAnswerThought
+                                            .takeIf { value -> value.isNotBlank() }
+                                            ?.let { value -> add("Initial analysis (noagent mode): $value") }
+                                        addAll(ircotThoughts)
+                                    }.joinToString(" | ")
+
                                 logger.info { "========== Original Question: ${qaItem.question} ==========" }
+                                if (config.triggers.mode == "agent" && initialAnswerThought.isNotBlank()) {
+                                    logger.info { "Noagent Initial Answer: $initialAnswerThought" }
+                                    logger.info { "IRCoT Steps: ${1 + ircotThoughts.size}" }
+                                    logger.info { "Final Triples: ${answered.retrievedTriples.size}" }
+                                    logger.info { "Final Chunks: ${answered.retrievedChunks.size}" }
+                                }
                                 logger.info { "Gold Answer: ${qaItem.referenceAnswer.orEmpty()}" }
                                 logger.info { "Generated Answer: ${answered.answer}" }
+                                if (config.triggers.mode == "agent" && thoughtProcess.isNotBlank()) {
+                                    logger.info { "Thought Process: $thoughtProcess" }
+                                }
                                 if (evalResult != null) {
                                     val modeTag = if (config.triggers.mode == "agent") "Agent" else "No agent"
                                     logger.info { "$modeTag mode eval result: $evalResult (${evalOutcome.method})" }

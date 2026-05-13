@@ -121,7 +121,7 @@ class KTRetrieverTest {
     }
 
     @Test
-    fun `generateIrcotPrompt uses shared ircot template when source-specific keys are absent`() {
+    fun `generateIrcotPrompt uses shared ircot for backend and python-compatible inline fallback for main`() {
         val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
             mapOf(
@@ -157,9 +157,11 @@ class KTRetrieverTest {
             )
 
         assertTrue(backendPrompt.startsWith("SHARED::"))
-        assertTrue(mainPrompt.startsWith("SHARED::"))
+        assertTrue(mainPrompt.contains("You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning."))
+        assertTrue(mainPrompt.contains("Consider the initial analysis from noagent mode"))
+        assertTrue(mainPrompt.contains("Build upon the initial analysis to provide deeper insights"))
         assertTrue("current query" in backendPrompt)
-        assertTrue("::1" in mainPrompt)
+        assertTrue(mainPrompt.contains("Step 1:"))
     }
 
     @Test
@@ -208,29 +210,23 @@ class KTRetrieverTest {
     }
 
     @Test
-    fun `processRetrievalResults includes enhanced question and can disable enhancement`() {
+    fun `processRetrievalResults returns python-compatible payload and retrieval time`() {
         val config = ConfigManager("config/base_config.json")
         val retriever = createRetriever(datasetName = "demo", config = config)
         val question = "Who leads OpenAI in San Francisco?"
 
-        val enhancedResults = retriever.processRetrievalResults(question = question)
-        val enhancedQuestion = enhancedResults["enhanced_question"]?.toString().orEmpty()
-        val keywords = (enhancedResults["query_keywords"] as? List<*>).orEmpty().map { it.toString() }
+        val (results, retrievalTime) = retriever.processRetrievalResults(question = question)
+        val triples = (results["triples"] as? List<*>)?.map { it.toString() }.orEmpty()
+        val chunkIds = (results["chunk_ids"] as? List<*>)?.map { it.toString() }.orEmpty()
+        val chunkContents = (results["chunk_contents"] as? List<*>)?.map { it.toString() }.orEmpty()
+        val chunkRetrievalResults = (results["chunk_retrieval_results"] as? List<*>)?.map { it.toString() }.orEmpty()
 
-        assertTrue(enhancedQuestion.startsWith(question))
-        assertTrue("Entities:" in enhancedQuestion)
-        assertTrue(keywords.isNotEmpty())
-
-        config.overrideConfig(
-            mapOf(
-                "retrieval" to
-                    mapOf(
-                        "enable_query_enhancement" to false,
-                    ),
-            ),
-        )
-        val plainResults = retriever.processRetrievalResults(question = question)
-        assertEquals(question, plainResults["enhanced_question"])
+        assertTrue(retrievalTime >= 0.0)
+        assertTrue(triples.isEmpty() || triples.all { triple -> triple.isNotBlank() })
+        assertTrue(chunkIds.isNotEmpty())
+        assertEquals(chunkIds.size, chunkContents.size)
+        assertTrue(chunkRetrievalResults.isNotEmpty())
+        assertEquals(setOf("triples", "chunk_ids", "chunk_contents", "chunk_retrieval_results"), results.keys)
     }
 
     @Test
@@ -300,7 +296,7 @@ class KTRetrieverTest {
                 recallPaths = 2,
             )
 
-        val results =
+        val (results, retrievalTime) =
             retriever.processRetrievalResults(
                 question = "Where does Alice work?",
                 involvedTypes =
@@ -318,9 +314,10 @@ class KTRetrieverTest {
             (results["chunk_ids"] as? List<*>)?.map { value -> value.toString() }
                 ?: error("Expected 'chunk_ids' list in results")
 
+        assertTrue(retrievalTime >= 0.0)
         assertTrue(triples.isNotEmpty())
-        assertTrue(triples.first().contains("\"works_at\""))
-        assertTrue(triples.any { triple -> "\"works_at\"" in triple })
+        assertTrue(triples.first().contains("works_at"))
+        assertTrue(triples.any { triple -> "works_at" in triple })
         assertTrue("c1" in chunkIds)
     }
 
@@ -372,13 +369,14 @@ class KTRetrieverTest {
                 recallPaths = 2,
             )
 
-        val results = retriever.processRetrievalResults(question = "What is related to Alpha?")
+        val (results, retrievalTime) = retriever.processRetrievalResults(question = "What is related to Alpha?")
         val triples =
             (results["triples"] as? List<*>)?.map { value -> value.toString() }
                 ?: error("Expected 'triples' list in results")
 
-        assertTrue(triples.any { triple -> "\"linked_to\"" in triple })
-        assertTrue(triples.any { triple -> "\"connected_to\"" in triple })
+        assertTrue(retrievalTime >= 0.0)
+        assertTrue(triples.any { triple -> "linked_to" in triple })
+        assertTrue(triples.any { triple -> "connected_to" in triple })
     }
 
     @Test
@@ -421,32 +419,30 @@ class KTRetrieverTest {
                 recallPaths = 1,
             )
 
-        val results = retriever.processRetrievalResults(question = "Give Beta details")
+        val (results, retrievalTime) = retriever.processRetrievalResults(question = "Give Beta details")
         val chunkIds =
             (results["chunk_ids"] as? List<*>)?.map { value -> value.toString() }
                 ?: error("Expected 'chunk_ids' list")
         val chunkContents =
             (results["chunk_contents"] as? List<*>)?.map { value -> value.toString() }
                 ?: error("Expected 'chunk_contents' list")
-        val chunkContentsById =
-            (results["chunk_contents_by_id"] as? Map<*, *>)?.mapValues { entry -> entry.value.toString() }
-                ?: error("Expected 'chunk_contents_by_id' map")
         val chunkRetrievalResults =
             (results["chunk_retrieval_results"] as? List<*>)?.map { value -> value.toString() }
                 ?: error("Expected 'chunk_retrieval_results' list")
 
+        assertTrue(retrievalTime >= 0.0)
         assertEquals(2, chunkIds.size)
         assertTrue("c1" in chunkIds)
         assertTrue("c2" in chunkIds)
         assertEquals(2, chunkContents.size)
-        assertTrue(chunkContentsById["c1"]?.contains("Delta") == true)
-        assertTrue(chunkContentsById["c2"]?.contains("Beta") == true)
+        assertTrue(chunkContents.any { value -> "Delta" in value })
+        assertTrue(chunkContents.any { value -> "Beta" in value })
         assertEquals(2, chunkRetrievalResults.size)
         assertTrue(chunkRetrievalResults.all { line -> line.startsWith("[Chunk ") })
     }
 
     @Test
-    fun `processRetrievalResults reports hybrid strategy when reranking enabled`() {
+    fun `processRetrievalResults keeps payload stable when reranking toggles`() {
         val root = Files.createTempDirectory("youtu-graphrag-retriever-strategy-test")
         val config = createTestConfig(root)
         val datasetName = "strategy_ds"
@@ -480,13 +476,14 @@ class KTRetrieverTest {
                 topK = 2,
             )
 
-        val results = retriever.processRetrievalResults(question = "How is NodeA connected?")
-        val hybridStrategy = results["retrieval_strategy"]?.toString().orEmpty()
-        assertTrue(hybridStrategy.startsWith("hybrid_lexical"))
+        val (results, hybridTime) = retriever.processRetrievalResults(question = "How is NodeA connected?")
+        assertTrue(hybridTime >= 0.0)
+        assertEquals(setOf("triples", "chunk_ids", "chunk_contents", "chunk_retrieval_results"), results.keys)
 
         config.overrideConfig(mapOf("retrieval" to mapOf("enable_reranking" to false)))
-        val lexicalResults = retriever.processRetrievalResults(question = "How is NodeA connected?")
-        assertEquals("lexical", lexicalResults["retrieval_strategy"])
+        val (lexicalResults, lexicalTime) = retriever.processRetrievalResults(question = "How is NodeA connected?")
+        assertTrue(lexicalTime >= 0.0)
+        assertEquals(setOf("triples", "chunk_ids", "chunk_contents", "chunk_retrieval_results"), lexicalResults.keys)
     }
 
     @Test
