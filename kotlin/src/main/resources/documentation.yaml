@@ -1,0 +1,362 @@
+openapi: 3.0.3
+info:
+  title: Youtu-GraphRAG API
+  description: Unified interface for GraphRAG operations including knowledge graph construction, retrieval, and QA.
+  version: 0.0.1
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+paths:
+  /api/status:
+    get:
+      summary: Check system status
+      responses:
+        '200':
+          description: System is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  status:
+                    type: string
+                  graphrag_available:
+                    type: boolean
+
+  /api/upload:
+    post:
+      summary: Upload files to create a new dataset
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileUploadResponse'
+        '400':
+          description: Invalid request
+        '500':
+          description: Upload failed
+
+  /api/construct-graph:
+    post:
+      summary: Construct a knowledge graph for a dataset
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphConstructionRequest'
+      responses:
+        '200':
+          description: Construction triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphConstructionResponse'
+        '400':
+          description: Invalid request or missing client_id
+        '404':
+          description: Dataset not found
+        '500':
+          description: Construction failed
+
+  /api/ask-question:
+    post:
+      summary: Ask a question against a dataset
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionRequest'
+      responses:
+        '200':
+          description: Question answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionResponse'
+        '400':
+          description: Invalid request or missing client_id
+        '404':
+          description: Graph artifacts not found
+        '500':
+          description: Question answering failed
+
+  /api/datasets:
+    get:
+      summary: List all available datasets
+      responses:
+        '200':
+          description: List of datasets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetsResponse'
+
+  /api/datasets/{dataset_name}:
+    delete:
+      summary: Delete a dataset and its associated files
+      parameters:
+        - name: dataset_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dataset deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseOperationResponse'
+        '400':
+          description: Invalid request or missing dataset_name
+
+  /api/datasets/{dataset_name}/schema:
+    post:
+      summary: Upload a custom schema for a dataset
+      parameters:
+        - name: dataset_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Schema uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  dataset_name:
+                    type: string
+        '400':
+          description: Invalid schema or request
+        '500':
+          description: Upload failed
+
+  /api/datasets/{dataset_name}/reconstruct:
+    post:
+      summary: Reconstruct knowledge graph for an existing dataset
+      parameters:
+        - name: dataset_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reconstruction triggered successfully
+        '400':
+          description: Invalid request
+        '404':
+          description: Dataset not found
+        '500':
+          description: Reconstruction failed
+
+  /api/graph/{dataset_name}:
+    get:
+      summary: Get graph visualization data
+      parameters:
+        - name: dataset_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Graph data retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Graph not found
+
+  /ws/{client_id}:
+    get:
+      summary: WebSocket for progress and QA updates
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '101':
+          description: Switching protocols
+
+components:
+  schemas:
+    FileUploadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        dataset_name:
+          type: string
+          nullable: true
+        files_count:
+          type: integer
+          nullable: true
+
+    GraphConstructionRequest:
+      type: object
+      required:
+        - dataset_name
+      properties:
+        dataset_name:
+          type: string
+
+    GraphConstructionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        graph_data:
+          type: object
+          nullable: true
+
+    QuestionRequest:
+      type: object
+      required:
+        - question
+        - dataset_name
+      properties:
+        question:
+          type: string
+        dataset_name:
+          type: string
+
+    ReasoningStep:
+      type: object
+      properties:
+        type:
+          type: string
+        question:
+          type: string
+        triples:
+          type: array
+          items:
+            type: string
+        triples_count:
+          type: integer
+        chunk_contents:
+          type: array
+          items:
+            type: string
+        chunks_count:
+          type: integer
+        processing_time:
+          type: number
+          format: double
+        thought:
+          type: string
+          nullable: true
+
+    QuestionResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        sub_questions:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: string
+        retrieved_triples:
+          type: array
+          items:
+            type: string
+        retrieved_chunks:
+          type: array
+          items:
+            type: string
+        reasoning_steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReasoningStep'
+        visualization_data:
+          type: object
+
+    DatasetInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        has_custom_schema:
+          type: boolean
+
+    DatasetsResponse:
+      type: object
+      properties:
+        datasets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetInfo'
+
+    BaseOperationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        dataset_name:
+          type: string
+          nullable: true

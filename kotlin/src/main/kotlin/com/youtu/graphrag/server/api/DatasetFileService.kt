@@ -8,6 +8,8 @@ import com.youtu.graphrag.shared.ingest.BestEffortDocumentParser
 import com.youtu.graphrag.shared.ingest.DocumentParser
 import com.youtu.graphrag.shared.io.decodeBytesWithDetection
 import io.github.oshai.kotlinlogging.KotlinLogging
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -72,6 +74,11 @@ data class IncomingFile(
     val bytes: ByteArray,
 )
 
+data class TempFileInfo(
+    val originalFileName: String,
+    val tempFilePath: Path,
+)
+
 data class UploadResult(
     val success: Boolean,
     val message: String,
@@ -86,6 +93,39 @@ class DatasetFileService(
 ) {
     private val logger = KotlinLogging.logger {}
     private val mapper = ObjectMapper().registerKotlinModule()
+
+    companion object {
+        const val MAX_UPLOAD_FILE_SIZE = 50 * 1024 * 1024L // 50MB
+        const val MAX_SCHEMA_FILE_SIZE = 5 * 1024 * 1024L // 5MB
+
+        private val ALLOWED_EXTENSIONS =
+            setOf(
+                ".txt",
+                ".md",
+                ".json",
+                ".pdf",
+                ".docx",
+                ".doc",
+            )
+
+        fun InputStream.copyToWithLimit(
+            output: OutputStream,
+            maxSize: Long,
+        ): Long {
+            val buffer = ByteArray(8192)
+            var totalRead = 0L
+            while (true) {
+                val read = this.read(buffer)
+                if (read == -1) break
+                totalRead += read
+                require(totalRead <= maxSize) {
+                    "File exceeds maximum allowed size of $maxSize bytes"
+                }
+                output.write(buffer, 0, read)
+            }
+            return totalRead
+        }
+    }
 
     private val dataUploadedDir = rootDir.resolve("data/uploaded")
     private val outputGraphsDir = rootDir.resolve("output/graphs")
@@ -106,84 +146,79 @@ class DatasetFileService(
         ensureDemoSchemaExists()
     }
 
-    fun uploadFiles(files: List<IncomingFile>): UploadResult {
-        if (files.isEmpty()) {
-            throw IllegalArgumentException("No files were provided")
-        }
+    fun uploadFilesFromTemp(tempFiles: List<TempFileInfo>): UploadResult {
+        require(tempFiles.isNotEmpty()) { "No files were provided" }
 
-        val datasetName = generateDatasetName(files)
+        val datasetName = generateDatasetName(tempFiles.map { it.originalFileName })
         val uploadDir = dataUploadedDir.resolve(datasetName).apply { createDirectories() }
 
         val corpusData = mutableListOf<Any>()
         val skippedFiles = mutableListOf<String>()
         var processedCount = 0
 
-        files.forEachIndexed { index, file ->
-            val safeFileName = sanitizeUploadFileName(file.fileName, index)
-            val filePath = uploadDir.resolve(safeFileName)
-            Files.write(
-                filePath,
-                file.bytes,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE,
-            )
+        try {
+            tempFiles.forEachIndexed { index, tempFile ->
+                val safeFileName = sanitizeUploadFileName(tempFile.originalFileName, index)
+                val filePath = uploadDir.resolve(safeFileName)
 
-            val extension = safeFileName.substringAfterLast('.', "").lowercase()
-            val extWithDot = if (extension.isEmpty()) "" else ".$extension"
-            if (extWithDot !in ALLOWED_EXTENSIONS) {
-                skippedFiles.add(safeFileName)
-                return@forEachIndexed
-            }
+                Files.move(tempFile.tempFilePath, filePath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
 
-            when (extWithDot) {
-                ".txt", ".md" -> {
-                    val text = decodeBytesWithDetection(file.bytes)
-                    corpusData.add(mapOf("title" to safeFileName, "text" to text))
-                    processedCount += 1
+                val extension = safeFileName.substringAfterLast('.', "").lowercase()
+                val extWithDot = if (extension.isEmpty()) "" else ".$extension"
+                if (extWithDot !in ALLOWED_EXTENSIONS) {
+                    skippedFiles.add(safeFileName)
+                    return@forEachIndexed
                 }
 
-                ".json" -> {
-                    val decoded = decodeBytesWithDetection(file.bytes)
-                    runCatching { mapper.readTree(decoded) }
-                        .onSuccess { parsed ->
-                            if (parsed.isArray) {
-                                parsed.forEach { node ->
-                                    corpusData.add(mapper.convertValue(node, Any::class.java))
+                when (extWithDot) {
+                    ".txt", ".md" -> {
+                        val text = decodeBytesWithDetection(Files.readAllBytes(filePath))
+                        corpusData.add(mapOf("title" to safeFileName, "text" to text))
+                        processedCount += 1
+                    }
+
+                    ".json" -> {
+                        val bytes = Files.readAllBytes(filePath)
+                        val decoded = decodeBytesWithDetection(bytes)
+                        runCatching { mapper.readTree(decoded) }
+                            .onSuccess { parsed ->
+                                if (parsed.isArray) {
+                                    parsed.forEach { node ->
+                                        corpusData.add(mapper.convertValue(node, Any::class.java))
+                                    }
+                                } else {
+                                    corpusData.add(mapper.convertValue(parsed, Any::class.java))
                                 }
-                            } else {
-                                corpusData.add(mapper.convertValue(parsed, Any::class.java))
+                                processedCount += 1
+                            }.onFailure {
+                                corpusData.add(mapOf("title" to safeFileName, "text" to decoded))
+                                processedCount += 1
                             }
-                            processedCount += 1
-                        }.onFailure {
-                            corpusData.add(mapOf("title" to safeFileName, "text" to decoded))
+                    }
+
+                    ".pdf", ".docx", ".doc" -> {
+                        val parsedText = documentParser.parseFile(filePath.toString(), extWithDot)
+                        if (parsedText.isBlank()) {
+                            skippedFiles.add(safeFileName)
+                        } else {
+                            corpusData.add(mapOf("title" to safeFileName, "text" to parsedText))
                             processedCount += 1
                         }
-                }
-
-                ".pdf", ".docx", ".doc" -> {
-                    val parsedText = documentParser.parseFile(filePath.toString(), extWithDot)
-                    if (parsedText.isBlank()) {
-                        skippedFiles.add(safeFileName)
-                    } else {
-                        corpusData.add(mapOf("title" to safeFileName, "text" to parsedText))
-                        processedCount += 1
                     }
                 }
             }
+        } finally {
+            tempFiles.forEach { it.tempFilePath.deleteIfExists() }
         }
 
-        if (processedCount == 0) {
-            val skippedSummary =
-                if (skippedFiles.isEmpty()) {
-                    ""
-                } else {
-                    "; skipped: ${skippedFiles.joinToString(", ")}"
-                }
-
-            throw IllegalArgumentException(
-                "No supported files were uploaded. Allowed: .txt, .md, .json, .pdf, .docx, .doc$skippedSummary",
-            )
+        val skippedSummary =
+            if (skippedFiles.isEmpty()) {
+                ""
+            } else {
+                "; skipped: ${skippedFiles.joinToString(", ")}"
+            }
+        require(processedCount > 0) {
+            "No supported files were uploaded. Allowed: .txt, .md, .json, .pdf, .docx, .doc$skippedSummary"
         }
 
         val corpusPath = uploadDir.resolve("corpus.json")
@@ -206,6 +241,19 @@ class DatasetFileService(
             datasetName = datasetName,
             filesCount = processedCount,
         )
+    }
+
+    fun uploadFiles(files: List<IncomingFile>): UploadResult {
+        require(files.isNotEmpty()) { "No files were provided" }
+
+        val tempFiles =
+            files.map { file ->
+                val tempFile = Files.createTempFile("graphrag_compat_", ".tmp")
+                Files.write(tempFile, file.bytes)
+                TempFileInfo(file.fileName, tempFile)
+            }
+
+        return uploadFilesFromTemp(tempFiles)
     }
 
     fun getDatasets(): DatasetsResponse {
@@ -253,28 +301,32 @@ class DatasetFileService(
     fun saveSchema(
         datasetName: String,
         schemaFileName: String,
-        bytes: ByteArray,
+        inputStream: InputStream,
     ): Map<String, Any> {
         val safeDatasetName = requireSafeDatasetName(datasetName)
-        if (safeDatasetName == "demo") {
-            throw IllegalArgumentException("Cannot upload schema for demo dataset")
-        }
+        require(safeDatasetName != "demo") { "Cannot upload schema for demo dataset" }
 
-        if (!schemaFileName.lowercase().endsWith(".json")) {
-            throw IllegalArgumentException("Schema file must be a .json file")
-        }
+        require(schemaFileName.lowercase().endsWith(".json")) { "Schema file must be a .json file" }
 
-        val decoded = decodeBytesWithDetection(bytes)
-        val parsed =
+        val tempFile = Files.createTempFile("graphrag_schema_", ".json")
+        val bytes =
             try {
-                mapper.readTree(decoded)
-            } catch (error: Exception) {
-                throw IllegalArgumentException("Invalid JSON: ${error.message}")
+                inputStream.use { input ->
+                    input.copyToWithLimit(Files.newOutputStream(tempFile), MAX_SCHEMA_FILE_SIZE)
+                }
+                Files.readAllBytes(tempFile)
+            } finally {
+                tempFile.deleteIfExists()
             }
 
-        if (!parsed.isObject) {
-            throw IllegalArgumentException("Schema JSON must be an object")
+        val decoded = decodeBytesWithDetection(bytes)
+        val parsedResult = runCatching { mapper.readTree(decoded) }
+        require(parsedResult.isSuccess) {
+            "Invalid JSON: ${parsedResult.exceptionOrNull()?.message}"
         }
+        val parsed = parsedResult.getOrThrow()
+
+        require(parsed.isObject) { "Schema JSON must be an object" }
 
         schemasDir.createDirectories()
         mapper.writerWithDefaultPrettyPrinter().writeValue(schemasDir.resolve("$safeDatasetName.json").toFile(), parsed)
@@ -288,9 +340,7 @@ class DatasetFileService(
 
     fun deleteDataset(datasetName: String): Map<String, Any> {
         val safeDatasetName = requireSafeDatasetName(datasetName)
-        if (safeDatasetName == "demo") {
-            throw IllegalArgumentException("Cannot delete demo dataset")
-        }
+        require(safeDatasetName != "demo") { "Cannot delete demo dataset" }
 
         val deletedFiles = mutableListOf<String>()
 
@@ -317,10 +367,10 @@ class DatasetFileService(
         mapper.writerWithDefaultPrettyPrinter().writeValue(demoSchemaPath.toFile(), demoSchema)
     }
 
-    private fun generateDatasetName(files: List<IncomingFile>): String {
+    private fun generateDatasetName(fileNames: List<String>): String {
         val initialName =
-            if (files.size == 1) {
-                val rawName = files.single().fileName.substringBeforeLast('.', files.single().fileName)
+            if (fileNames.size == 1) {
+                val rawName = fileNames.single().substringBeforeLast('.', fileNames.single())
                 val cleaned =
                     rawName
                         .filter { character ->
@@ -335,7 +385,7 @@ class DatasetFileService(
                 }
             } else {
                 val dateString = LocalDate.now(clock).format(DateTimeFormatter.BASIC_ISO_DATE)
-                "${files.size}files_$dateString"
+                "${fileNames.size}files_$dateString"
             }
 
         var candidate = initialName
@@ -391,17 +441,5 @@ class DatasetFileService(
         if (path.deleteIfExists()) {
             deletedFiles.add(path.toString())
         }
-    }
-
-    companion object {
-        private val ALLOWED_EXTENSIONS =
-            setOf(
-                ".txt",
-                ".md",
-                ".json",
-                ".pdf",
-                ".docx",
-                ".doc",
-            )
     }
 }

@@ -70,7 +70,7 @@ class LlmClientTest {
             assertTrue(requestBody.contains("test-model"))
             assertTrue(requestBody.contains("who is the leader?"))
         } finally {
-            server.stop(0)
+            stopMockServer(server)
         }
     }
 
@@ -101,7 +101,7 @@ class LlmClientTest {
             assertTrue(requestBody.contains("deepseek-chat"))
             assertTrue(requestBody.contains("default provider prompt"))
         } finally {
-            server.stop(0)
+            stopMockServer(server)
         }
     }
 
@@ -141,7 +141,7 @@ class LlmClientTest {
             assertTrue(requestQuery.contains("api-version=2025-01-01-preview"))
             assertEquals("azure-key", apiKeyHeader)
         } finally {
-            server.stop(0)
+            stopMockServer(server)
         }
     }
 }
@@ -166,6 +166,12 @@ private fun createMockServer(
     server.executor = Executors.newSingleThreadExecutor()
     server.createContext(path, handler)
     return server
+}
+
+private fun stopMockServer(server: HttpServer) {
+    val executor = server.executor as? java.util.concurrent.ExecutorService
+    server.stop(0)
+    executor?.shutdownNow()
 }
 
 private fun writeChatCompletionResponse(

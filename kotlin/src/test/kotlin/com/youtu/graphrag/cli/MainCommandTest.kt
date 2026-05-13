@@ -1,5 +1,6 @@
 package com.youtu.graphrag.cli
 
+import com.youtu.graphrag.shared.llm.LlmClient
 import java.nio.file.Files
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -115,7 +116,17 @@ class MainCommandTest {
             """.trimIndent(),
         )
 
-        val command = MainCommand()
+        val mockLlmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String =
+                    if (prompt.contains("decompose")) {
+                        "{\"sub_questions\": [{\"sub-question\": \"Who leads Project Alpha?\"}]}"
+                    } else {
+                        "Alice is the leader."
+                    }
+            }
+
+        val command = MainCommand(llmClient = mockLlmClient)
         command.configPath = configPath.toString()
         command.datasets = listOf("demo")
 

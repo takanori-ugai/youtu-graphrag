@@ -8,6 +8,8 @@ import com.youtu.graphrag.server.api.QuestionAnsweringService
 import com.youtu.graphrag.shared.config.ConfigManager
 import com.youtu.graphrag.shared.config.ConfigProvider
 import com.youtu.graphrag.shared.constructor.KTBuilder
+import com.youtu.graphrag.shared.llm.LlmClient
+import com.youtu.graphrag.shared.llm.LlmClientFactory
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import picocli.CommandLine
@@ -31,7 +33,9 @@ data class QaItem(
     description = ["Youtu-GraphRAG Kotlin CLI"],
     mixinStandardHelpOptions = true,
 )
-class MainCommand : Runnable {
+class MainCommand(
+    private val llmClient: LlmClient = LlmClientFactory.fromEnvironment(),
+) : Runnable {
     private val logger = KotlinLogging.logger {}
     private val objectMapper = ObjectMapper().registerKotlinModule()
 
@@ -146,7 +150,11 @@ class MainCommand : Runnable {
                     return@forEach
                 }
 
-                val qaService = QuestionAnsweringService(config = config)
+                val qaService =
+                    QuestionAnsweringService(
+                        config = config,
+                        llmClient = llmClient,
+                    )
                 var evaluatedCount = 0
                 var correctCount = 0
 
@@ -154,49 +162,57 @@ class MainCommand : Runnable {
                     runBlocking {
                         val results = mutableListOf<Map<String, Any?>>()
                         qaItems.forEachIndexed { index, qaItem ->
-                            val response =
-                                qaService.answerQuestion(
-                                    datasetName = datasetName,
-                                    question = qaItem.question,
-                                )
-                            val evalResult = computeEvalResult(qaItem.referenceAnswer, response.answer)
-                            if (evalResult != null) {
-                                evaluatedCount += 1
-                                if (evalResult == "1") {
-                                    correctCount += 1
+                            try {
+                                val response =
+                                    qaService.answerQuestion(
+                                        datasetName = datasetName,
+                                        question = qaItem.question,
+                                    )
+                                val evalResult = computeEvalResult(qaItem.referenceAnswer, response.answer)
+                                if (evalResult != null) {
+                                    evaluatedCount += 1
+                                    if (evalResult == "1") {
+                                        correctCount += 1
+                                    }
+                                }
+
+                                val result =
+                                    mapOf(
+                                        "question" to qaItem.question,
+                                        "reference_answer" to qaItem.referenceAnswer,
+                                        "answer" to response.answer,
+                                        "eval_result" to evalResult,
+                                        "sub_questions" to response.subQuestions,
+                                        "retrieved_triples" to response.retrievedTriples,
+                                        "retrieved_chunks" to response.retrievedChunks,
+                                        "reasoning_steps" to
+                                            response.reasoningSteps.map { step ->
+                                                mapOf(
+                                                    "type" to step.type,
+                                                    "question" to step.question,
+                                                    "triples" to step.triples,
+                                                    "triples_count" to step.triplesCount,
+                                                    "chunk_contents" to step.chunkContents,
+                                                    "chunks_count" to step.chunksCount,
+                                                    "processing_time" to step.processingTime,
+                                                    "thought" to step.thought,
+                                                )
+                                            },
+                                        "visualization_data" to response.visualizationData.toString(),
+                                        "triples_count" to response.retrievedTriples.size,
+                                        "chunks_count" to response.retrievedChunks.size,
+                                    )
+                                logger.info {
+                                    "Answered question ${index + 1}/${qaItems.size} for dataset '$datasetName'"
+                                }
+                                results.add(result)
+                            } catch (error: Exception) {
+                                logger.error(
+                                    error,
+                                ) {
+                                    "Failed to answer question ${index + 1}/${qaItems.size} for dataset '$datasetName': ${qaItem.question}"
                                 }
                             }
-
-                            val result =
-                                mapOf(
-                                    "question" to qaItem.question,
-                                    "reference_answer" to qaItem.referenceAnswer,
-                                    "answer" to response.answer,
-                                    "eval_result" to evalResult,
-                                    "sub_questions" to response.subQuestions,
-                                    "retrieved_triples" to response.retrievedTriples,
-                                    "retrieved_chunks" to response.retrievedChunks,
-                                    "reasoning_steps" to
-                                        response.reasoningSteps.map { step ->
-                                            mapOf(
-                                                "type" to step.type,
-                                                "question" to step.question,
-                                                "triples" to step.triples,
-                                                "triples_count" to step.triplesCount,
-                                                "chunk_contents" to step.chunkContents,
-                                                "chunks_count" to step.chunksCount,
-                                                "processing_time" to step.processingTime,
-                                                "thought" to step.thought,
-                                            )
-                                        },
-                                    "visualization_data" to response.visualizationData.toString(),
-                                    "triples_count" to response.retrievedTriples.size,
-                                    "chunks_count" to response.retrievedChunks.size,
-                                )
-                            logger.info {
-                                "Answered question ${index + 1}/${qaItems.size} for dataset '$datasetName'"
-                            }
-                            results.add(result)
                         }
                         results
                     }
@@ -204,7 +220,11 @@ class MainCommand : Runnable {
                 if (evaluatedCount > 0) {
                     val accuracy = correctCount.toDouble() / evaluatedCount.toDouble() * 100.0
                     logger.info {
-                        "Evaluation summary for '$datasetName': $correctCount/$evaluatedCount correct (${String.format("%.2f", accuracy)}%)"
+                        "Evaluation summary for '$datasetName': $correctCount/$evaluatedCount correct (${String.format(
+                            java.util.Locale.ROOT,
+                            "%.2f",
+                            accuracy,
+                        )}%)"
                     }
                 }
 

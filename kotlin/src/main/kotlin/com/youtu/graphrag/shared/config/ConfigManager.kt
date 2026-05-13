@@ -68,9 +68,7 @@ class ConfigManager(
         get() = parsedConfig.evaluation
 
     fun loadConfig() {
-        if (!Files.exists(configPath)) {
-            throw IllegalArgumentException("Configuration file not found: $configPath")
-        }
+        require(Files.exists(configPath)) { "Configuration file not found: $configPath" }
 
         rawConfig =
             Files.newInputStream(configPath).use { stream ->
@@ -84,15 +82,17 @@ class ConfigManager(
     }
 
     fun getDatasetConfig(datasetName: String): DatasetConfig =
-        datasets[datasetName]
-            ?: throw IllegalArgumentException("Dataset '$datasetName' not found in configuration")
+        requireNotNull(datasets[datasetName]) {
+            "Dataset '$datasetName' not found in configuration"
+        }
 
     fun getPrompt(
         category: String,
         promptType: String,
     ): String =
-        prompts[category]?.get(promptType)
-            ?: throw IllegalArgumentException("Prompt not found: $category.$promptType")
+        requireNotNull(prompts[category]?.get(promptType)) {
+            "Prompt not found: $category.$promptType"
+        }
 
     fun getPromptFormatted(
         category: String,
@@ -111,10 +111,8 @@ class ConfigManager(
             }
 
         val missing = PLACEHOLDER_REGEX.find(rendered)?.groupValues?.get(1)
-        if (missing != null) {
-            throw IllegalArgumentException(
-                "Missing variable '$missing' for prompt $category.$promptType",
-            )
+        require(missing == null) {
+            "Missing variable '$missing' for prompt $category.$promptType"
         }
 
         return rendered
@@ -165,17 +163,15 @@ class ConfigManager(
         }
 
         val validModes = setOf("agent", "noagent")
-        if (triggers.mode !in validModes) {
-            throw IllegalArgumentException("Invalid mode: ${triggers.mode}. Must be one of $validModes")
+        require(triggers.mode in validModes) {
+            "Invalid mode: ${triggers.mode}. Must be one of $validModes"
         }
-        if (construction.mode !in validModes) {
-            throw IllegalArgumentException("Invalid construction mode: ${construction.mode}")
+        require(construction.mode in validModes) {
+            "Invalid construction mode: ${construction.mode}"
         }
-        if (retrieval.topK <= 0) {
-            throw IllegalArgumentException("top_k must be positive")
-        }
-        if (treeComm.structWeight !in 0.0..1.0) {
-            throw IllegalArgumentException("struct_weight must be between 0 and 1")
+        require(retrieval.topK > 0) { "top_k must be positive" }
+        require(treeComm.structWeight in 0.0..1.0) {
+            "struct_weight must be between 0 and 1"
         }
     }
 

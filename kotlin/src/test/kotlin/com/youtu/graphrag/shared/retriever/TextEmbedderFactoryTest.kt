@@ -40,7 +40,7 @@ class TextEmbedderFactoryTest {
             assertTrue(requestBody.contains("who discovered gravity?"))
             assertEquals("Bearer test-key", authHeader)
         } finally {
-            server.stop(0)
+            stopMockServer(server)
         }
     }
 
@@ -71,7 +71,7 @@ class TextEmbedderFactoryTest {
 
             assertTrue(vector.contentEquals(expected))
         } finally {
-            server.stop(0)
+            stopMockServer(server)
         }
     }
 
@@ -112,6 +112,12 @@ private fun createMockServer(
     server.executor = Executors.newSingleThreadExecutor()
     server.createContext(path, handler)
     return server
+}
+
+private fun stopMockServer(server: HttpServer) {
+    val executor = server.executor as? java.util.concurrent.ExecutorService
+    server.stop(0)
+    executor?.shutdownNow()
 }
 
 private fun writeEmbeddingResponse(

@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -67,7 +68,7 @@ class QuestionAnsweringService(
 
         val graphq = GraphQ(safeDatasetName, config, llmClient = llmClient)
         val ktRetriever =
-            KTRetriever(
+            KTRetriever.createAndBuild(
                 datasetName = safeDatasetName,
                 graphPath = graphPath.toString(),
                 recallPaths = config.retrieval.recallPaths,
@@ -78,9 +79,10 @@ class QuestionAnsweringService(
                 rootDir = rootDir,
             )
 
-        ktRetriever.buildIndices()
-
-        val decomposition = graphq.decompose(question, schemaPath.toString())
+        val decomposition =
+            withContext(Dispatchers.IO) {
+                graphq.decompose(question, schemaPath.toString())
+            }
         val subQuestions =
             parseSubQuestions(decomposition["sub_questions"])
                 .ifEmpty { listOf(mapOf("sub-question" to question)) }
@@ -201,9 +203,9 @@ class QuestionAnsweringService(
                                 "The new query is: ${buildFollowUpQuery(question, currentQuery, thoughts)}"
                             }
                         thought =
-                            llmClient
-                                .complete(ircotPrompt)
-                                .trim()
+                            withContext(Dispatchers.IO) {
+                                llmClient.complete(ircotPrompt)
+                            }.trim()
                                 .ifBlank { heuristicFallback }
                     }
 
@@ -293,11 +295,11 @@ class QuestionAnsweringService(
 
     private fun shouldRunIrcot(): Boolean = config.triggers.mode == "agent" && config.retrieval.agent.enableIrcot
 
-    private fun generateAnswerWithFallback(
+    private suspend fun generateAnswerWithFallback(
         prompt: String,
         fallback: String,
     ): String {
-        val response = llmClient.complete(prompt).trim()
+        val response = withContext(Dispatchers.IO) { llmClient.complete(prompt) }.trim()
         return response.ifBlank { fallback }
     }
 

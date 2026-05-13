@@ -1,6 +1,5 @@
 package com.youtu.graphrag.server.api
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.youtu.graphrag.server.api.contracts.BaseOperationResponse
 import com.youtu.graphrag.server.api.contracts.FileUploadResponse
 import com.youtu.graphrag.server.api.contracts.GraphConstructionRequest
@@ -19,6 +18,7 @@ import io.ktor.server.http.content.staticFiles
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.plugins.swagger.swaggerUI
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.respond
@@ -35,15 +35,17 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import kotlinx.serialization.json.Json
+import java.io.InputStream
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.LocalDateTime
+import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 
 private val logger = KotlinLogging.logger {}
-private val objectMapper = jacksonObjectMapper()
 
 fun main() {
     embeddedServer(
@@ -88,6 +90,8 @@ fun Application.youtuGraphRagModule() {
     install(WebSockets)
 
     routing {
+        swaggerUI(path = "swagger", swaggerFile = "documentation.yaml")
+
         if (assetsDir != null) {
             staticFiles("/assets", assetsDir.toFile())
         } else {
@@ -145,27 +149,35 @@ fun Application.youtuGraphRagModule() {
 
         post("/api/upload") {
             val multipart = call.receiveMultipart()
-            val files = mutableListOf<IncomingFile>()
-            while (true) {
-                val part = multipart.readPart() ?: break
-                try {
-                    if (part is PartData.FileItem) {
-                        val fileName = part.originalFileName ?: "uploaded_${files.size}"
-                        val bytes = part.provider().toInputStream().readBytes()
-                        files.add(IncomingFile(fileName = fileName, bytes = bytes))
-                    }
-                } finally {
-                    part.dispose.invoke()
-                }
-            }
-
-            if (files.isEmpty()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No files were provided"))
-                return@post
-            }
-
+            val tempFiles = mutableListOf<TempFileInfo>()
             try {
-                val result = datasetFileService.uploadFiles(files)
+                while (true) {
+                    val part = multipart.readPart() ?: break
+                    try {
+                        if (part is PartData.FileItem) {
+                            val originalName = part.originalFileName ?: "file_${tempFiles.size}"
+                            val tempFile = Files.createTempFile("graphrag_upload_", ".tmp")
+                            part.provider().toInputStream().use { input ->
+                                DatasetFileService.run {
+                                    input.copyToWithLimit(
+                                        Files.newOutputStream(tempFile),
+                                        DatasetFileService.MAX_UPLOAD_FILE_SIZE,
+                                    )
+                                }
+                            }
+                            tempFiles.add(TempFileInfo(originalName, tempFile))
+                        }
+                    } finally {
+                        part.dispose.invoke()
+                    }
+                }
+
+                if (tempFiles.isEmpty()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No files were provided"))
+                    return@post
+                }
+
+                val result = datasetFileService.uploadFilesFromTemp(tempFiles)
                 call.respond(
                     FileUploadResponse(
                         success = result.success,
@@ -176,9 +188,11 @@ fun Application.youtuGraphRagModule() {
                 )
             } catch (error: IllegalArgumentException) {
                 logger.warn(error) { "Invalid upload request" }
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid upload request"))
+                tempFiles.forEach { it.tempFilePath.deleteIfExists() }
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid upload request")))
             } catch (error: Exception) {
                 logger.error(error) { "Upload failed" }
+                tempFiles.forEach { it.tempFilePath.deleteIfExists() }
                 call.respond(HttpStatusCode.InternalServerError, mapOf("detail" to "Upload failed"))
             }
         }
@@ -444,38 +458,49 @@ fun Application.youtuGraphRagModule() {
 
             val multipart = call.receiveMultipart()
             var schemaFileName: String? = null
-            var schemaBytes: ByteArray? = null
-
-            while (true) {
-                val part = multipart.readPart() ?: break
-                try {
-                    if (part is PartData.FileItem && schemaBytes == null) {
-                        schemaFileName = part.originalFileName ?: "schema.json"
-                        schemaBytes = part.provider().toInputStream().readBytes()
-                    }
-                } finally {
-                    part.dispose.invoke()
-                }
-            }
-
-            if (schemaBytes == null || schemaFileName == null) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No schema file was provided"))
-                return@post
-            }
-            val safeSchemaBytes = requireNotNull(schemaBytes)
-            val safeSchemaFileName = requireNotNull(schemaFileName)
+            var tempSchemaFile: Path? = null
 
             try {
-                call.respond(datasetFileService.saveSchema(datasetName, safeSchemaFileName, safeSchemaBytes))
+                while (true) {
+                    val part = multipart.readPart() ?: break
+                    try {
+                        if (part is PartData.FileItem && tempSchemaFile == null) {
+                            schemaFileName = part.originalFileName ?: "schema.json"
+                            val tempFile = Files.createTempFile("graphrag_schema_", ".tmp")
+                            part.provider().toInputStream().use { input ->
+                                DatasetFileService.run {
+                                    input.copyToWithLimit(
+                                        Files.newOutputStream(tempFile),
+                                        DatasetFileService.MAX_SCHEMA_FILE_SIZE,
+                                    )
+                                }
+                            }
+                            tempSchemaFile = tempFile
+                        }
+                    } finally {
+                        part.dispose.invoke()
+                    }
+                }
+
+                if (tempSchemaFile == null || schemaFileName == null) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "No schema file was provided"))
+                    return@post
+                }
+
+                Files.newInputStream(tempSchemaFile).use { input ->
+                    call.respond(datasetFileService.saveSchema(datasetName, schemaFileName, input))
+                }
             } catch (error: IllegalArgumentException) {
                 logger.warn(error) { "Invalid schema for '$datasetName'" }
-                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to "Invalid schema"))
+                call.respond(HttpStatusCode.BadRequest, mapOf("detail" to (error.message ?: "Invalid schema")))
             } catch (error: Exception) {
                 logger.error(error) { "Schema upload failed for '$datasetName'" }
                 call.respond(
                     HttpStatusCode.InternalServerError,
                     mapOf("detail" to "Failed to upload schema"),
                 )
+            } finally {
+                tempSchemaFile?.deleteIfExists()
             }
         }
 
@@ -617,8 +642,7 @@ fun Application.youtuGraphRagModule() {
             try {
                 val graphData =
                     graphConstructionService.loadGraphVisualization(datasetName) ?: run {
-                        val payload = objectMapper.writeValueAsString(defaultGraphVisualization())
-                        call.respondText(payload, ContentType.Application.Json)
+                        call.respond(HttpStatusCode.NotFound, mapOf("detail" to "Graph not found for dataset '$datasetName'"))
                         return@get
                     }
                 val payload = graphData.toString()
@@ -739,51 +763,3 @@ private fun Any?.coerceIntOrNull(): Int? =
         is String -> this.toIntOrNull()
         else -> null
     }
-
-private fun defaultGraphVisualization(): Map<String, Any> =
-    mapOf(
-        "nodes" to
-            listOf(
-                mapOf(
-                    "id" to "node1",
-                    "name" to "Example Entity 1",
-                    "category" to "person",
-                    "value" to 5,
-                    "symbolSize" to 25,
-                ),
-                mapOf(
-                    "id" to "node2",
-                    "name" to "Example Entity 2",
-                    "category" to "location",
-                    "value" to 3,
-                    "symbolSize" to 20,
-                ),
-            ),
-        "links" to
-            listOf(
-                mapOf(
-                    "source" to "node1",
-                    "target" to "node2",
-                    "name" to "located_in",
-                    "value" to 1,
-                ),
-            ),
-        "categories" to
-            listOf(
-                mapOf(
-                    "name" to "person",
-                    "itemStyle" to mapOf("color" to "#ff6b6b"),
-                ),
-                mapOf(
-                    "name" to "location",
-                    "itemStyle" to mapOf("color" to "#4ecdc4"),
-                ),
-            ),
-        "stats" to
-            mapOf(
-                "total_nodes" to 2,
-                "total_edges" to 1,
-                "displayed_nodes" to 2,
-                "displayed_edges" to 1,
-            ),
-    )

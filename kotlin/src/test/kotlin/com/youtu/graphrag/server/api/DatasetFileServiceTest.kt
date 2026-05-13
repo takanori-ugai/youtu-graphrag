@@ -136,18 +136,19 @@ class DatasetFileServiceTest {
         service.ensureStartupDirectories()
 
         assertFailsWith<IllegalArgumentException> {
-            service.saveSchema("demo", "schema.json", "{}".encodeToByteArray())
+            service.saveSchema("demo", "schema.json", "{}".encodeToByteArray().inputStream())
         }
 
         assertFailsWith<IllegalArgumentException> {
-            service.saveSchema("ds1", "schema.txt", "{}".encodeToByteArray())
+            service.saveSchema("ds1", "schema.txt", "{}".encodeToByteArray().inputStream())
         }
 
         assertFailsWith<IllegalArgumentException> {
-            service.saveSchema("ds1", "schema.json", "[]".encodeToByteArray())
+            service.saveSchema("ds1", "schema.json", "[]".encodeToByteArray().inputStream())
         }
 
-        val response = service.saveSchema("ds1", "schema.json", "{\"Nodes\":[\"person\"]}".encodeToByteArray())
+        val response =
+            service.saveSchema("ds1", "schema.json", "{\"Nodes\":[\"person\"]}".encodeToByteArray().inputStream())
         assertEquals(true, response["success"])
         assertTrue(root.resolve("schemas/ds1.json").exists())
     }

@@ -97,7 +97,6 @@ class KTRetrieverTest {
                 topK = 3,
                 recallPaths = 2,
             )
-        retriever.buildIndices()
 
         val results =
             retriever.processRetrievalResults(
@@ -166,7 +165,6 @@ class KTRetrieverTest {
                 topK = 3,
                 recallPaths = 2,
             )
-        retriever.buildIndices()
 
         val results = retriever.processRetrievalResults(question = "What is related to Alpha?")
         val triples = (results["triples"] as List<*>).map { value -> value.toString() }
@@ -214,7 +212,6 @@ class KTRetrieverTest {
                 topK = 2,
                 recallPaths = 1,
             )
-        retriever.buildIndices()
 
         val results = retriever.processRetrievalResults(question = "Give Beta details")
         val chunkIds = (results["chunk_ids"] as List<*>).map { value -> value.toString() }
@@ -261,7 +258,6 @@ class KTRetrieverTest {
                 rootDir = root,
                 topK = 2,
             )
-        retriever.buildIndices()
 
         val results = retriever.processRetrievalResults(question = "How is NodeA connected?")
         val hybridStrategy = results["retrieval_strategy"]?.toString().orEmpty()
@@ -305,7 +301,6 @@ class KTRetrieverTest {
                 graphPath = graphPath.toString(),
                 rootDir = root,
             )
-        retriever.buildIndices()
 
         val cacheRoot = root.resolve("retriever/faiss_cache_new").resolve(datasetName)
         assertTrue(cacheRoot.resolve("triple_embedding_cache.json").exists())
@@ -357,7 +352,6 @@ class KTRetrieverTest {
                 graphPath = graphPath.toString(),
                 rootDir = root,
             )
-        retriever.buildIndices()
 
         val cacheRoot = root.resolve("retriever/faiss_cache_new").resolve(datasetName)
         assertTrue(!cacheRoot.resolve("triple_embedding_cache.json").exists())
@@ -416,7 +410,6 @@ class KTRetrieverTest {
                 graphPath = graphPath.toString(),
                 rootDir = root,
             )
-        retriever.buildIndices()
 
         val tripleCacheTree = mapper.readTree(cacheRoot.resolve("triple_embedding_cache.json").toFile())
         val chunkCacheTree = mapper.readTree(cacheRoot.resolve("chunk_embedding_cache.json").toFile())
@@ -439,6 +432,18 @@ class KTRetrieverTest {
         assertTrue(cacheRoot.resolve("chunk_embedding_cache.npz").exists())
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun `buildIndices throws when topK is negative`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-negative-topk")
+        val config = createTestConfig(root)
+        val retriever =
+            createRetriever(
+                datasetName = "negative_topk_ds",
+                config = config,
+                topK = -1,
+            )
+    }
+
     private fun createRetriever(
         datasetName: String,
         config: ConfigManager,
@@ -447,7 +452,7 @@ class KTRetrieverTest {
         topK: Int = 5,
         recallPaths: Int = 2,
     ): KTRetriever =
-        KTRetriever(
+        KTRetriever.createAndBuild(
             datasetName = datasetName,
             graphPath = graphPath,
             recallPaths = recallPaths,

@@ -38,7 +38,12 @@ class QuestionAnsweringServiceTest {
         val constructionService = GraphConstructionService(config = config, rootDir = root)
         constructionService.constructGraph("qa_ds")
 
-        val qaService = QuestionAnsweringService(config = config, rootDir = root)
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient = createMockLlmClient(),
+            )
         val callbackStages = mutableListOf<String>()
         val response =
             runBlocking {
@@ -86,7 +91,12 @@ class QuestionAnsweringServiceTest {
 
         assertTrue(root.resolve("output/graphs/demo_new.json").exists())
 
-        val qaService = QuestionAnsweringService(config = config, rootDir = root)
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient = createMockLlmClient(),
+            )
         val response =
             runBlocking {
                 qaService.answerQuestion("missing_ds", "What does demo mention?")
@@ -116,7 +126,12 @@ class QuestionAnsweringServiceTest {
         val constructionService = GraphConstructionService(config = config, rootDir = root)
         constructionService.constructGraph("multi_ds")
 
-        val qaService = QuestionAnsweringService(config = config, rootDir = root)
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient = createMockLlmClient(),
+            )
         val updates = mutableListOf<QaStageUpdate>()
         val response =
             runBlocking {
@@ -187,7 +202,12 @@ class QuestionAnsweringServiceTest {
     fun `answer question throws when no graph artifacts exist`() {
         val root = createRootDir()
         val config = createTestConfig(root)
-        val qaService = QuestionAnsweringService(config = config, rootDir = root)
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient = createMockLlmClient(),
+            )
 
         assertFailsWith<GraphArtifactNotFoundException> {
             runBlocking {
@@ -195,6 +215,31 @@ class QuestionAnsweringServiceTest {
             }
         }
     }
+
+    private fun createMockLlmClient(): LlmClient =
+        object : LlmClient {
+            override fun complete(prompt: String): String =
+                when {
+                    prompt.contains("decompose") -> {
+                        """
+                        {
+                          "sub_questions": [
+                            {"sub-question": "Sub-question 1"},
+                            {"sub-question": "Sub-question 2"}
+                          ]
+                        }
+                        """.trimIndent()
+                    }
+
+                    prompt.contains("thought") || prompt.contains("step") -> {
+                        "Step reasoning details with thought process."
+                    }
+
+                    else -> {
+                        "Mocked deterministic answer."
+                    }
+                }
+        }
 
     private fun createTestConfig(root: Path): ConfigManager {
         val config = ConfigManager("config/base_config.yaml")
