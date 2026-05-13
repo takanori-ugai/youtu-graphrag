@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 class GraphQTest {
     @Test
     fun `decompose keeps single question for simple input`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val graphQ = GraphQ(datasetName = "demo", config = config, llmClient = emptyLlmClient())
 
         val result = graphQ.decompose("Who leads Project Alpha?", "schemas/demo.json")
@@ -26,7 +26,7 @@ class GraphQTest {
 
     @Test
     fun `decompose splits conjunction question into multiple subquestions`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val graphQ = GraphQ(datasetName = "demo", config = config, llmClient = emptyLlmClient())
 
         val result =
@@ -45,7 +45,7 @@ class GraphQTest {
 
     @Test
     fun `decompose uses llm json output when available`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val graphQ =
             GraphQ(
                 datasetName = "demo",
@@ -79,7 +79,7 @@ class GraphQTest {
 
     @Test
     fun `decompose supports legacy llm list format`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val graphQ =
             GraphQ(
                 datasetName = "demo",
@@ -117,23 +117,31 @@ class GraphQTest {
         val corpusPath = dataDir.resolve("demo_corpus.json").also { it.writeText("[]") }
         val qaPath = dataDir.resolve("demo.json").also { it.writeText("[]") }
         val schemaPath = schemaDir.resolve("demo.json").also { it.writeText("{\"Nodes\":[]}") }
-        val configPath = configDir.resolve("base_config.yaml")
+        val configPath = configDir.resolve("base_config.json")
         configPath.writeText(
             """
-            datasets:
-              demo:
-                corpus_path: ${corpusPath.pathString}
-                qa_path: ${qaPath.pathString}
-                schema_path: ${schemaPath.pathString}
-                graph_output: ${outputDir.resolve("graphs/demo_new.json").pathString}
-            triggers:
-              mode: noagent
-            construction:
-              mode: noagent
-            retrieval:
-              top_k_filter: 5
-            output:
-              base_dir: ${outputDir.pathString}
+            {
+              "datasets": {
+                "demo": {
+                  "corpus_path": "${corpusPath.pathString}",
+                  "qa_path": "${qaPath.pathString}",
+                  "schema_path": "${schemaPath.pathString}",
+                  "graph_output": "${outputDir.resolve("graphs/demo_new.json").pathString}"
+                }
+              },
+              "triggers": {
+                "mode": "noagent"
+              },
+              "construction": {
+                "mode": "noagent"
+              },
+              "retrieval": {
+                "top_k_filter": 5
+              },
+              "output": {
+                "base_dir": "${outputDir.pathString}"
+              }
+            }
             """.trimIndent(),
         )
 
@@ -155,6 +163,48 @@ class GraphQTest {
         graphQ.decompose("Who leads Project Alpha?", schemaPath.pathString)
 
         assertTrue(observedPrompt.contains("decompose", ignoreCase = true))
+    }
+
+    @Test
+    fun `decompose supports python prompt alias decomposition anony_chs`() {
+        val root = Files.createTempDirectory("graphrag-graphq-prompt-alias")
+        val schemaPath = root.resolve("demo_schema.json")
+        schemaPath.writeText("""{"Nodes":["person"],"Relations":["related_to"],"Attributes":["name"]}""")
+
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "prompts" to
+                    mapOf(
+                        "decomposition" to
+                            mapOf(
+                                "anony_chs" to "ALIAS_CHS::{question}::{ontology}",
+                                "novel" to "NOVEL::{question}::{ontology}",
+                                "general" to "GENERAL::{question}::{ontology}",
+                            ),
+                    ),
+            ),
+        )
+
+        var observedPrompt = ""
+        val graphQ =
+            GraphQ(
+                datasetName = "anony_chs",
+                config = config,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String {
+                            observedPrompt = prompt
+                            return ""
+                        }
+                    },
+            )
+
+        graphQ.decompose("PERSON#1是谁？", schemaPath.pathString)
+
+        assertTrue(observedPrompt.startsWith("ALIAS_CHS::"))
+        assertTrue(observedPrompt.contains("PERSON#1是谁？"))
+        assertTrue(observedPrompt.contains("\"Nodes\""))
     }
 
     private fun emptyLlmClient(): LlmClient =

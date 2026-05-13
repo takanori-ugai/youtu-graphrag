@@ -133,7 +133,7 @@ class QuestionAnsweringService(
                 ReasoningStep(
                     type = "sub_question",
                     question = retrieval.subQuestionText,
-                    triples = retrieval.triples.take(10),
+                    triples = retrieval.triplesFormatted.take(10),
                     triplesCount = retrieval.triples.size,
                     chunkContents = chunkPreview,
                     chunksCount = retrieval.chunkIds.size,
@@ -149,7 +149,7 @@ class QuestionAnsweringService(
                             "index" to (retrieval.index + 1),
                             "total" to subQuestions.size,
                             "question" to retrieval.subQuestionText,
-                            "triples_preview" to retrieval.triples.distinct().take(5),
+                            "triples_preview" to retrieval.triplesFormatted.distinct().take(5),
                             "triples_count" to step.triplesCount,
                             "chunks_count" to step.chunksCount,
                             "processing_time" to step.processingTime,
@@ -158,13 +158,13 @@ class QuestionAnsweringService(
             )
         }
 
-        val initialTriples = allTriples.toList()
+        val initialTriplesFormatted = allTriplesFormatted.toList()
         val initialChunks = chunkById.values.toList()
-        val initialContext = ktRetriever.buildKnowledgeContext(initialTriples, initialChunks)
+        val initialContext = ktRetriever.buildKnowledgeContext(initialTriplesFormatted, initialChunks)
         var finalAnswer =
             generateAnswerWithFallback(
                 prompt = ktRetriever.generatePrompt(question, initialContext),
-                fallback = synthesizeAnswer(initialTriples, initialChunks),
+                fallback = synthesizeAnswer(allTriples.toList(), initialChunks),
             )
 
         if (shouldRunIrcot()) {
@@ -266,7 +266,7 @@ class QuestionAnsweringService(
                 }
 
                 val newQuery = extractNewQuery(thought)
-                if (newQuery.isNullOrBlank() || newQuery == currentQuery) {
+                if (newQuery.isNullOrBlank() || isRepeatedQuery(newQuery, currentQuery)) {
                     finalAnswer = finalAnswer.ifBlank { thought }
                     break
                 }
@@ -339,31 +339,70 @@ class QuestionAnsweringService(
     }
 
     private fun extractFinalAnswer(thought: String): String? {
-        val marker = "So the answer is:"
+        val marker = FINAL_ANSWER_MARKER
         val index = thought.indexOf(marker, ignoreCase = true)
         if (index < 0) {
             return null
         }
-        return thought.substring(index + marker.length).trim().ifBlank { null }
+
+        val tail = thought.substring(index + marker.length)
+        val newQueryIndex = tail.indexOf(NEW_QUERY_MARKER, ignoreCase = true)
+        val answerBody =
+            if (newQueryIndex >= 0) {
+                tail.substring(0, newQueryIndex)
+            } else {
+                tail
+            }
+
+        val normalized =
+            answerBody
+                .lineSequence()
+                .map { line -> line.trim() }
+                .filter { line -> line.isNotBlank() }
+                .joinToString(" ")
+                .trim('"', '\'')
+                .trim()
+
+        return normalized.ifBlank { null }
     }
 
-    private fun containsNewQueryMarker(thought: String): Boolean = thought.contains("The new query is:", ignoreCase = true)
+    private fun containsNewQueryMarker(thought: String): Boolean = thought.contains(NEW_QUERY_MARKER, ignoreCase = true)
 
     private fun extractNewQuery(thought: String): String? {
-        val marker = "The new query is:"
+        val marker = NEW_QUERY_MARKER
         val index = thought.indexOf(marker, ignoreCase = true)
         if (index < 0) {
             return null
         }
-        return thought
-            .substring(index + marker.length)
-            .lineSequence()
-            .map { line -> line.trim() }
-            .firstOrNull { line -> line.isNotBlank() }
-            ?.trim('"', '\'')
-            .orEmpty()
-            .ifBlank { null }
+
+        val tail =
+            thought
+                .substring(index + marker.length)
+                .replace("`", "")
+
+        val normalized =
+            tail
+                .lineSequence()
+                .map { line -> line.trim() }
+                .firstOrNull { line -> line.isNotBlank() }
+                ?.trim('"', '\'')
+                .orEmpty()
+                .trim()
+
+        return normalized.ifBlank { null }
     }
+
+    private fun isRepeatedQuery(
+        candidate: String,
+        currentQuery: String,
+    ): Boolean = normalizeQuery(candidate) == normalizeQuery(currentQuery)
+
+    private fun normalizeQuery(query: String): String =
+        query
+            .lowercase()
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trimEnd('.', '?', '!', ';', ':')
 
     private fun shouldProcessSubquestionsInParallel(subQuestionCount: Int): Boolean =
         subQuestionCount > 1 && config.retrieval.agent.enableParallelSubquestions
@@ -825,5 +864,10 @@ class QuestionAnsweringService(
         return raw.entries
             .filter { (key, value) -> key != null && value != null }
             .associate { (key, value) -> key.toString() to value.toString() }
+    }
+
+    companion object {
+        private const val FINAL_ANSWER_MARKER = "So the answer is:"
+        private const val NEW_QUERY_MARKER = "The new query is:"
     }
 }

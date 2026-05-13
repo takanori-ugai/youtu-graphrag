@@ -2,6 +2,7 @@ package com.youtu.graphrag.shared.config
 
 import java.nio.file.Files
 import kotlin.io.path.createTempDirectory
+import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -10,7 +11,7 @@ import kotlin.test.assertTrue
 class ConfigManagerTest {
     @Test
     fun `loads base config and key dataset contracts`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
 
         assertTrue(config.datasets.containsKey("demo"))
         assertEquals("agent", config.triggers.mode)
@@ -23,7 +24,7 @@ class ConfigManagerTest {
 
     @Test
     fun `applies nested overrides with python-compatible keys`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
 
         config.overrideConfig(
             mapOf(
@@ -38,7 +39,7 @@ class ConfigManagerTest {
 
     @Test
     fun `formats prompts and fails on missing variable`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
 
         val rendered =
             config.getPromptFormatted(
@@ -68,7 +69,7 @@ class ConfigManagerTest {
         val tempRoot = createTempDirectory("youtu-graphrag-config-test")
         val baseDir = tempRoot.resolve("output")
 
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
             mapOf(
                 "output" to
@@ -87,5 +88,23 @@ class ConfigManagerTest {
         assertTrue(Files.isDirectory(baseDir.resolve("graphs")))
         assertTrue(Files.isDirectory(baseDir.resolve("chunks")))
         assertTrue(Files.isDirectory(baseDir.resolve("logs")))
+    }
+
+    @Test
+    fun `saveConfig persists json only and round-trips config map`() {
+        val tempRoot = createTempDirectory("youtu-graphrag-config-save-json-test")
+        val jsonPath = tempRoot.resolve("saved_config.json")
+
+        val config = ConfigManager("config/base_config.json")
+        config.saveConfig(jsonPath.toString())
+        val savedText = jsonPath.readText()
+        assertTrue(savedText.contains("\"datasets\""))
+
+        val reloaded = ConfigManager(jsonPath.toString())
+        assertEquals(config.toMap(), reloaded.toMap())
+
+        assertFailsWith<IllegalArgumentException> {
+            config.saveConfig(tempRoot.resolve("saved_config.yaml").toString())
+        }
     }
 }

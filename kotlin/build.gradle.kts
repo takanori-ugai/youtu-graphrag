@@ -105,8 +105,8 @@ dependencies {
     implementation("blue.strategic.parquet:parquet-floor:1.51")
     implementation("info.picocli:picocli:4.7.6")
     implementation("nl.cwts:networkanalysis:$networkAnalysisVersion")
-    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.17.2")
     implementation("org.jetbrains.kotlinx:multik-default:0.3.1")
+    implementation("org.apache.opennlp:opennlp-tools:2.5.4")
 }
 
 tasks {

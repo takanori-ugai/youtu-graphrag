@@ -49,7 +49,7 @@ class MainCommand(
     @Option(
         names = ["--config"],
         description = ["Path to configuration file"],
-        defaultValue = "config/base_config.yaml",
+        defaultValue = "config/base_config.json",
     )
     lateinit var configPath: String
 

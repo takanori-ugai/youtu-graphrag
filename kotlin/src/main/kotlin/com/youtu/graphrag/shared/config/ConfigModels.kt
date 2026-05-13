@@ -34,6 +34,7 @@ data class ConstructionConfig(
         ),
     val chunkSize: Int = 1000,
     val overlap: Int = 200,
+    val minTailTokens: Int = 100,
     val treeComm: TreeCommConfig = TreeCommConfig(),
 )
 
@@ -73,8 +74,19 @@ data class EmbeddingsConfig(
     val maxLength: Int = 512,
 )
 
+data class OpenNlpConfig(
+    val tokenizerModelPath: String = "",
+    val posModelPath: String = "",
+    val personModelPath: String = "",
+    val organizationModelPath: String = "",
+    val locationModelPath: String = "",
+)
+
 data class NlpConfig(
+    val provider: String = "regex",
     val spacyModel: String = "en_core_web_lg",
+    val stopwords: List<String> = RegexQueryNlpDefaults.STOPWORDS,
+    val opennlp: OpenNlpConfig = OpenNlpConfig(),
 )
 
 data class OutputConfig(

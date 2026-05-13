@@ -91,31 +91,19 @@ class MainCommandTest {
             """.trimIndent(),
         )
 
-        val configPath = configDir.resolve("base_config.yaml")
+        val configPath = configDir.resolve("base_config.json")
         configPath.writeText(
-            """
-            datasets:
-              demo:
-                corpus_path: ${corpusPath.toAbsolutePath()}
-                qa_path: ${qaPath.toAbsolutePath()}
-                schema_path: ${schemaPath.toAbsolutePath()}
-                graph_output: ${graphOutputPath.toAbsolutePath()}
-            triggers:
-              constructor_trigger: true
-              retrieve_trigger: true
-              mode: noagent
-            construction:
-              mode: noagent
-            retrieval:
-              top_k_filter: 5
-              recall_paths: 2
-              cache_dir: ${cacheDir.toAbsolutePath()}
-            output:
-              base_dir: ${outputBase.toAbsolutePath()}
-              graphs_dir: ${outputGraphs.toAbsolutePath()}
-              chunks_dir: ${outputChunks.toAbsolutePath()}
-              logs_dir: ${outputLogs.toAbsolutePath()}
-            """.trimIndent(),
+            buildConfigJson(
+                corpusPath = corpusPath.toAbsolutePath().toString(),
+                qaPath = qaPath.toAbsolutePath().toString(),
+                schemaPath = schemaPath.toAbsolutePath().toString(),
+                graphOutputPath = graphOutputPath.toAbsolutePath().toString(),
+                cacheDir = cacheDir.toAbsolutePath().toString(),
+                outputBase = outputBase.toAbsolutePath().toString(),
+                outputGraphs = outputGraphs.toAbsolutePath().toString(),
+                outputChunks = outputChunks.toAbsolutePath().toString(),
+                outputLogs = outputLogs.toAbsolutePath().toString(),
+            ),
         )
 
         val mockLlmClient =
@@ -214,32 +202,63 @@ class MainCommandTest {
         qaPath.writeText("[{\"question\":\"Who leads Project Alpha?\",\"answer\":\"Alice\"}]")
         schemaPath.writeText("""{"Nodes":["person"],"Relations":["leads"],"Attributes":["name"]}""")
 
-        val configPath = configDir.resolve("base_config.yaml")
+        val configPath = configDir.resolve("base_config.json")
         configPath.writeText(
-            """
-            datasets:
-              demo:
-                corpus_path: ${corpusPath.toAbsolutePath()}
-                qa_path: ${qaPath.toAbsolutePath()}
-                schema_path: ${schemaPath.toAbsolutePath()}
-                graph_output: ${graphOutputPath.toAbsolutePath()}
-            triggers:
-              constructor_trigger: true
-              retrieve_trigger: true
-              mode: noagent
-            construction:
-              mode: noagent
-            retrieval:
-              top_k_filter: 5
-              recall_paths: 2
-              cache_dir: ${cacheDir.toAbsolutePath()}
-            output:
-              base_dir: ${outputBase.toAbsolutePath()}
-              graphs_dir: ${outputGraphs.toAbsolutePath()}
-              chunks_dir: ${outputChunks.toAbsolutePath()}
-              logs_dir: ${outputLogs.toAbsolutePath()}
-            """.trimIndent(),
+            buildConfigJson(
+                corpusPath = corpusPath.toAbsolutePath().toString(),
+                qaPath = qaPath.toAbsolutePath().toString(),
+                schemaPath = schemaPath.toAbsolutePath().toString(),
+                graphOutputPath = graphOutputPath.toAbsolutePath().toString(),
+                cacheDir = cacheDir.toAbsolutePath().toString(),
+                outputBase = outputBase.toAbsolutePath().toString(),
+                outputGraphs = outputGraphs.toAbsolutePath().toString(),
+                outputChunks = outputChunks.toAbsolutePath().toString(),
+                outputLogs = outputLogs.toAbsolutePath().toString(),
+            ),
         )
         return configPath
     }
+
+    private fun buildConfigJson(
+        corpusPath: String,
+        qaPath: String,
+        schemaPath: String,
+        graphOutputPath: String,
+        cacheDir: String,
+        outputBase: String,
+        outputGraphs: String,
+        outputChunks: String,
+        outputLogs: String,
+    ): String =
+        """
+        {
+          "datasets": {
+            "demo": {
+              "corpus_path": "$corpusPath",
+              "qa_path": "$qaPath",
+              "schema_path": "$schemaPath",
+              "graph_output": "$graphOutputPath"
+            }
+          },
+          "triggers": {
+            "constructor_trigger": true,
+            "retrieve_trigger": true,
+            "mode": "noagent"
+          },
+          "construction": {
+            "mode": "noagent"
+          },
+          "retrieval": {
+            "top_k_filter": 5,
+            "recall_paths": 2,
+            "cache_dir": "$cacheDir"
+          },
+          "output": {
+            "base_dir": "$outputBase",
+            "graphs_dir": "$outputGraphs",
+            "chunks_dir": "$outputChunks",
+            "logs_dir": "$outputLogs"
+          }
+        }
+        """.trimIndent()
 }

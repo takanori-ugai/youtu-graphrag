@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.youtu.graphrag.shared.config.ConfigManager
 import com.youtu.graphrag.shared.graph.GraphRelationship
+import com.youtu.graphrag.shared.retriever.nlp.QueryNlp
+import com.youtu.graphrag.shared.retriever.nlp.QueryNlpFactory
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Path
 import java.util.Locale
@@ -95,6 +97,7 @@ class KTRetriever private constructor(
     private val chunkOrdinalById: Map<String, Int>,
     private val chunkById: Map<String, String>,
     private val vectorStrategyTag: String,
+    private val queryNlp: QueryNlp,
 ) {
     private val logger = KotlinLogging.logger {}
     private val mapper = ObjectMapper().registerKotlinModule()
@@ -122,6 +125,7 @@ class KTRetriever private constructor(
 
             val embedder = RetrieverEmbedderFactory.fromConfig(config = config)
             val builder = IndexBuilder(datasetName, config, rootDir, embedder)
+            val queryNlp = QueryNlpFactory.create(config = config, rootDir = rootDir)
 
             val triples = builder.loadTriples(builder.resolvePath(graphPath))
             val adjacency = builder.buildAdjacency(triples)
@@ -171,6 +175,7 @@ class KTRetriever private constructor(
                 chunkOrdinalById = chunkOrdinal,
                 chunkById = chunks,
                 vectorStrategyTag = strategyTag,
+                queryNlp = queryNlp,
             )
         }
     }
@@ -184,7 +189,17 @@ class KTRetriever private constructor(
             config.retrieval.faiss.searchK
                 .coerceAtLeast(normalizedTopK)
         val vectorEnabled = config.retrieval.enableReranking
-        val normalizedQuestionKeywords = tokenize(question)
+        val nlpAnalysis = queryNlp.analyze(question)
+        val enhancedQuestion =
+            if (config.retrieval.enableQueryEnhancement) {
+                nlpAnalysis.enhancedQuestion(question)
+            } else {
+                question
+            }
+        val normalizedQuestionKeywords =
+            nlpAnalysis
+                .normalizedKeywordSet()
+                .ifEmpty { tokenize(question) }
         val typeFilteredTriples = filterTriplesByInvolvedTypes(tripleRecords, involvedTypes)
         val retrievalPool = typeFilteredTriples.ifEmpty { tripleRecords }
 
@@ -200,7 +215,7 @@ class KTRetriever private constructor(
         val vectorTripleScores =
             if (vectorEnabled) {
                 vectorSearchScoresForTriples(
-                    question = question,
+                    question = enhancedQuestion,
                     searchLimit = vectorSearchK,
                     allowedTriples = expandedTriples,
                 )
@@ -238,7 +253,7 @@ class KTRetriever private constructor(
         val vectorChunkScores =
             if (vectorEnabled) {
                 vectorSearchScoresForChunks(
-                    question = question,
+                    question = enhancedQuestion,
                     searchLimit = vectorSearchK,
                 )
             } else {
@@ -278,6 +293,9 @@ class KTRetriever private constructor(
 
         return mapOf(
             "question" to question,
+            "enhanced_question" to enhancedQuestion,
+            "query_entities" to nlpAnalysis.entities,
+            "query_keywords" to normalizedQuestionKeywords.toList(),
             "triples" to selectedTripleStrings,
             "triples_formatted" to selectedTripleFormatted,
             "chunk_ids" to chunkIdList,
@@ -291,6 +309,10 @@ class KTRetriever private constructor(
             "mode" to mode,
         )
     }
+
+    fun enhanceQuery(question: String): String = queryNlp.analyze(question).enhancedQuestion(question)
+
+    fun extractQueryKeywords(question: String): List<String> = queryNlp.analyze(question).normalizedKeywordSet().toList()
 
     fun buildKnowledgeContext(
         triples: List<String>,
@@ -311,19 +333,29 @@ class KTRetriever private constructor(
     fun generatePrompt(
         question: String,
         context: String,
-    ): String =
-        runCatching {
-            config.getPromptFormatted(
-                category = "retrieval",
-                promptType = retrievalPromptType(),
-                variables =
-                    mapOf(
-                        "question" to question,
-                        "context" to context,
-                    ),
-            )
-        }.getOrElse {
-            """
+    ): String {
+        retrievalPromptCandidates().forEach { promptType ->
+            val template = config.prompts["retrieval"]?.get(promptType) ?: return@forEach
+            val rendered =
+                runCatching {
+                    config.getPromptFormatted(
+                        category = "retrieval",
+                        promptType = promptType,
+                        variables =
+                            mapOf(
+                                "question" to question,
+                                "context" to context,
+                            ),
+                    )
+                }.getOrElse {
+                    template
+                        .replace("{question}", question)
+                        .replace("{context}", context)
+                }
+            return rendered
+        }
+
+        return """
             Question: $question
 
             Knowledge Context:
@@ -331,19 +363,20 @@ class KTRetriever private constructor(
 
             Answer (be specific and direct):
             """.trimIndent()
-        }
+    }
 
-    private fun retrievalPromptType(): String =
-        when (datasetName) {
+    private fun retrievalPromptCandidates(): List<String> =
+        when (datasetName.lowercase(Locale.ROOT)) {
             "anony_chs",
             "novel",
-            -> "novel"
+            "novel_chs",
+            -> listOf("novel_chs", "novel", "general")
 
             "anony_eng",
             "novel_eng",
-            -> "novel_eng"
+            -> listOf("novel_eng", "general")
 
-            else -> "general"
+            else -> listOf("general")
         }
 
     fun generateIrcotPrompt(

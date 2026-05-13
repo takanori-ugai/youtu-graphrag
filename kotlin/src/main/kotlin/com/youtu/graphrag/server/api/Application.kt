@@ -59,7 +59,7 @@ fun main() {
 fun Application.youtuGraphRagModule() {
     val wsManager = WebSocketConnectionManager()
 
-    val runtimeConfig = ConfigManager("config/base_config.yaml")
+    val runtimeConfig = ConfigManager("config/base_config.json")
     val graphConstructionService = GraphConstructionService(config = runtimeConfig)
     val questionAnsweringService = QuestionAnsweringService(config = runtimeConfig)
 

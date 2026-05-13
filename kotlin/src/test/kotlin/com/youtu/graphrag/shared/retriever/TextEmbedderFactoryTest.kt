@@ -77,7 +77,7 @@ class TextEmbedderFactoryTest {
 
     @Test
     fun `factory falls back to hash when openai provider has no api key`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
             mapOf(
                 "embeddings" to

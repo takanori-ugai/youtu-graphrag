@@ -11,6 +11,7 @@ import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -265,6 +266,224 @@ class QuestionAnsweringServiceTest {
     }
 
     @Test
+    fun `answer question extracts multiline final-answer marker before new-query text`() {
+        val root = createRootDir()
+        val config = createTestConfig(root)
+
+        writeCorpus(
+            root = root,
+            datasetName = "ircot_marker_ds",
+            documents =
+                listOf(
+                    mapOf(
+                        "title" to "Project Alpha",
+                        "text" to "Project Alpha is based in Tokyo.",
+                    ),
+                ),
+        )
+
+        val constructionService = GraphConstructionService(config = config, rootDir = root)
+        constructionService.constructGraph("ircot_marker_ds")
+
+        var retrievalPromptCalls = 0
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String =
+                            when {
+                                prompt.contains("decomposition", ignoreCase = true) || prompt.contains("decompose", ignoreCase = true) -> {
+                                    """
+                                    {
+                                      "sub_questions": [{"sub-question": "Where is Project Alpha based?"}],
+                                      "involved_types": {"nodes": [], "relations": [], "attributes": []}
+                                    }
+                                    """.trimIndent()
+                                }
+
+                                prompt.contains("Previous Thoughts") -> {
+                                    """
+                                    Reasoning trace:
+                                    So the answer is:
+                                    Tokyo
+                                    The new query is:
+                                    Who leads Project Alpha?
+                                    """.trimIndent()
+                                }
+
+                                else -> {
+                                    retrievalPromptCalls += 1
+                                    if (retrievalPromptCalls == 1) {
+                                        "Initial fallback answer"
+                                    } else {
+                                        ""
+                                    }
+                                }
+                            }
+                    },
+            )
+
+        val response =
+            runBlocking {
+                qaService.answerQuestion(
+                    "ircot_marker_ds",
+                    "Where is Project Alpha based?",
+                )
+            }
+
+        assertEquals("Tokyo", response.answer)
+        assertEquals(1, response.reasoningSteps.count { it.type == "ircot_step" })
+    }
+
+    @Test
+    fun `answer question continues ircot when new-query marker is present and different`() {
+        val root = createRootDir()
+        val config = createTestConfig(root)
+
+        writeCorpus(
+            root = root,
+            datasetName = "ircot_iterative_ds",
+            documents =
+                listOf(
+                    mapOf(
+                        "title" to "Project Alpha",
+                        "text" to "Project Alpha is based in Tokyo and led by Alice.",
+                    ),
+                ),
+        )
+
+        val constructionService = GraphConstructionService(config = config, rootDir = root)
+        constructionService.constructGraph("ircot_iterative_ds")
+
+        var retrievalPromptCalls = 0
+        var ircotCalls = 0
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String =
+                            when {
+                                prompt.contains("decomposition", ignoreCase = true) || prompt.contains("decompose", ignoreCase = true) -> {
+                                    """
+                                    {
+                                      "sub_questions": [{"sub-question": "Who leads Project Alpha?"}],
+                                      "involved_types": {"nodes": [], "relations": [], "attributes": []}
+                                    }
+                                    """.trimIndent()
+                                }
+
+                                prompt.contains("Previous Thoughts") -> {
+                                    ircotCalls += 1
+                                    if (ircotCalls == 1) {
+                                        """
+                                        Need one more hop.
+                                        The new query is:
+                                        Where is Project Alpha based?
+                                        """.trimIndent()
+                                    } else {
+                                        "So the answer is: Tokyo"
+                                    }
+                                }
+
+                                else -> {
+                                    retrievalPromptCalls += 1
+                                    if (retrievalPromptCalls == 1) {
+                                        "Initial fallback answer"
+                                    } else {
+                                        ""
+                                    }
+                                }
+                            }
+                    },
+            )
+
+        val response =
+            runBlocking {
+                qaService.answerQuestion(
+                    "ircot_iterative_ds",
+                    "Who leads Project Alpha?",
+                )
+            }
+
+        assertEquals("Tokyo", response.answer)
+        assertTrue(ircotCalls >= 2)
+        assertEquals(2, response.reasoningSteps.count { it.type == "ircot_step" })
+    }
+
+    @Test
+    fun `answer question terminates ircot on repeated query after normalization`() {
+        val root = createRootDir()
+        val config = createTestConfig(root)
+
+        writeCorpus(
+            root = root,
+            datasetName = "ircot_repeat_query_ds",
+            documents =
+                listOf(
+                    mapOf(
+                        "title" to "Project Alpha",
+                        "text" to "Alice leads Project Alpha.",
+                    ),
+                ),
+        )
+
+        val constructionService = GraphConstructionService(config = config, rootDir = root)
+        constructionService.constructGraph("ircot_repeat_query_ds")
+
+        var retrievalPromptCalls = 0
+        var ircotCalls = 0
+        val qaService =
+            QuestionAnsweringService(
+                config = config,
+                rootDir = root,
+                llmClient =
+                    object : LlmClient {
+                        override fun complete(prompt: String): String =
+                            when {
+                                prompt.contains("decomposition", ignoreCase = true) || prompt.contains("decompose", ignoreCase = true) -> {
+                                    """
+                                    {
+                                      "sub_questions": [{"sub-question": "Who leads Project Alpha?"}],
+                                      "involved_types": {"nodes": [], "relations": [], "attributes": []}
+                                    }
+                                    """.trimIndent()
+                                }
+
+                                prompt.contains("Previous Thoughts") -> {
+                                    ircotCalls += 1
+                                    "The new query is: who leads project alpha?   "
+                                }
+
+                                else -> {
+                                    retrievalPromptCalls += 1
+                                    if (retrievalPromptCalls == 1) {
+                                        "Seed answer from initial context."
+                                    } else {
+                                        ""
+                                    }
+                                }
+                            }
+                    },
+            )
+
+        val response =
+            runBlocking {
+                qaService.answerQuestion(
+                    "ircot_repeat_query_ds",
+                    "Who leads Project Alpha?",
+                )
+            }
+
+        assertEquals("Seed answer from initial context.", response.answer)
+        assertEquals(1, ircotCalls)
+        assertEquals(1, response.reasoningSteps.count { it.type == "ircot_step" })
+    }
+
+    @Test
     fun `answer question throws when no graph artifacts exist`() {
         val root = createRootDir()
         val config = createTestConfig(root)
@@ -308,7 +527,7 @@ class QuestionAnsweringServiceTest {
         }
 
     private fun createTestConfig(root: Path): ConfigManager {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
             mapOf(
                 "construction" to

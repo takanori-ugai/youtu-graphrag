@@ -20,7 +20,7 @@ class KTRetrieverTest {
 
     @Test
     fun `generatePrompt uses general retrieval prompt for default datasets`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val retriever = createRetriever(datasetName = "demo", config = config)
 
         val prompt = retriever.generatePrompt(question = "Who directed the film?", context = "some context")
@@ -31,7 +31,7 @@ class KTRetrieverTest {
 
     @Test
     fun `generatePrompt uses chinese novel prompt for anony_chs dataset`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val retriever = createRetriever(datasetName = "anony_chs", config = config)
 
         val prompt = retriever.generatePrompt(question = "PERSON#1是谁？", context = "小说知识")
@@ -42,13 +42,127 @@ class KTRetrieverTest {
 
     @Test
     fun `generatePrompt uses english novel prompt for anony_eng dataset`() {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         val retriever = createRetriever(datasetName = "anony_eng", config = config)
 
         val prompt = retriever.generatePrompt(question = "Who is PERSON#1?", context = "novel context")
 
         assertTrue(prompt.contains("You are a novel knowledge assistant"))
         assertTrue(prompt.contains("Who is PERSON#1?"))
+    }
+
+    @Test
+    fun `generatePrompt supports python prompt alias retrieval novel_chs`() {
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "prompts" to
+                    mapOf(
+                        "retrieval" to
+                            mapOf(
+                                "general" to "GENERAL::{question}::{context}",
+                                "novel_chs" to "NOVEL_CHS::{question}::{context}",
+                            ),
+                    ),
+            ),
+        )
+
+        val retriever = createRetriever(datasetName = "anony_chs", config = config)
+        val prompt = retriever.generatePrompt(question = "PERSON#1是谁？", context = "小说知识上下文")
+
+        assertTrue(prompt.startsWith("NOVEL_CHS::"))
+        assertTrue(prompt.contains("PERSON#1是谁？"))
+        assertTrue(prompt.contains("小说知识上下文"))
+    }
+
+    @Test
+    fun `enhanceQuery appends entities and key terms in python-compatible format`() {
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "nlp" to
+                    mapOf(
+                        "provider" to "regex",
+                        "stopwords" to listOf("where", "does", "at", "the"),
+                    ),
+            ),
+        )
+
+        val retriever = createRetriever(datasetName = "demo", config = config)
+        val question = "Where does Alice work at ACME Corp?"
+        val enhanced = retriever.enhanceQuery(question)
+
+        assertTrue(enhanced.startsWith(question))
+        assertTrue("Entities:" in enhanced)
+        assertTrue("Key terms:" in enhanced)
+    }
+
+    @Test
+    fun `extractQueryKeywords uses stopword filtering and entity retention`() {
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "nlp" to
+                    mapOf(
+                        "provider" to "regex",
+                        "stopwords" to listOf("what", "is", "the", "in"),
+                    ),
+            ),
+        )
+
+        val retriever = createRetriever(datasetName = "demo", config = config)
+        val keywords = retriever.extractQueryKeywords("What is the capital city in France?")
+
+        assertTrue("capital" in keywords)
+        assertTrue("city" in keywords)
+        assertTrue("france" in keywords)
+        assertTrue("what" !in keywords)
+        assertTrue("the" !in keywords)
+    }
+
+    @Test
+    fun `processRetrievalResults includes enhanced question and can disable enhancement`() {
+        val config = ConfigManager("config/base_config.json")
+        val retriever = createRetriever(datasetName = "demo", config = config)
+        val question = "Who leads OpenAI in San Francisco?"
+
+        val enhancedResults = retriever.processRetrievalResults(question = question)
+        val enhancedQuestion = enhancedResults["enhanced_question"]?.toString().orEmpty()
+        val keywords = (enhancedResults["query_keywords"] as? List<*>).orEmpty().map { it.toString() }
+
+        assertTrue(enhancedQuestion.startsWith(question))
+        assertTrue("Entities:" in enhancedQuestion)
+        assertTrue(keywords.isNotEmpty())
+
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "enable_query_enhancement" to false,
+                    ),
+            ),
+        )
+        val plainResults = retriever.processRetrievalResults(question = question)
+        assertEquals(question, plainResults["enhanced_question"])
+    }
+
+    @Test
+    fun `opennlp provider falls back to regex when models are unavailable`() {
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "nlp" to
+                    mapOf(
+                        "provider" to "opennlp",
+                    ),
+            ),
+        )
+
+        val retriever = createRetriever(datasetName = "demo", config = config)
+        val keywords = retriever.extractQueryKeywords("Who founded OpenAI in 2015?")
+
+        assertTrue("openai" in keywords)
+        assertTrue(keywords.isNotEmpty())
     }
 
     @Test
@@ -467,7 +581,7 @@ class KTRetrieverTest {
         )
 
     private fun createTestConfig(root: Path): ConfigManager {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
             mapOf(
                 "output" to

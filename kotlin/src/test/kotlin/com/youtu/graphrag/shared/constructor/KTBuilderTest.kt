@@ -1,0 +1,337 @@
+package com.youtu.graphrag.shared.constructor
+
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.youtu.graphrag.shared.config.ConfigManager
+import com.youtu.graphrag.shared.llm.LlmClient
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.createDirectories
+import kotlin.io.path.exists
+import kotlin.io.path.pathString
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+class KTBuilderTest {
+    private val mapper = ObjectMapper().registerKotlinModule()
+
+    @Test
+    fun `buildKnowledgeGraph maps llm extraction payload into graph relationships`() {
+        val root = Files.createTempDirectory("youtu-graphrag-ktbuilder-extraction-test")
+        val schemaPath = root.resolve("schemas/demo.json").also { it.parent.createDirectories() }
+        val corpusPath = root.resolve("data/sample_corpus.json").also { it.parent.createDirectories() }
+
+        schemaPath.writeText(
+            """
+            {
+              "Nodes": ["person", "organization"],
+              "Relations": ["works_at"],
+              "Attributes": ["profession"]
+            }
+            """.trimIndent(),
+        )
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+            corpusPath.toFile(),
+            listOf(
+                mapOf(
+                    "title" to "Doc Alpha",
+                    "text" to "Alice works at Acme.\nAlice leads platform\tengineering.",
+                ),
+            ),
+        )
+
+        val config = createTestConfig(root = root, mode = "noagent")
+        var observedPrompt = ""
+        val llmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String {
+                    observedPrompt = prompt
+                    return """
+                        {
+                          "attributes": {
+                            "Alice": ["profession: engineer"]
+                          },
+                          "triples": [
+                            ["Alice", "works_at", "Acme"]
+                          ],
+                          "entity_types": {
+                            "Alice": "person",
+                            "Acme": "organization"
+                          }
+                        }
+                        """.trimIndent()
+                }
+            }
+
+        val builder =
+            KTBuilder(
+                datasetName = "sample_ds",
+                schemaPath = schemaPath.pathString,
+                mode = "noagent",
+                config = config,
+                rootDir = root,
+                llmClient = llmClient,
+            )
+
+        val relationships = builder.buildKnowledgeGraph(corpusPath.pathString)
+
+        assertTrue(
+            relationships.any { relationship ->
+                relationship.relation == "has_attribute" &&
+                    relationship.startNode.properties["name"] == "Alice" &&
+                    relationship.endNode.properties["name"] == "profession: engineer"
+            },
+        )
+        assertTrue(
+            relationships.any { relationship ->
+                relationship.relation == "works_at" &&
+                    relationship.startNode.properties["name"] == "Alice" &&
+                    relationship.endNode.properties["name"] == "Acme"
+            },
+        )
+        assertTrue(
+            relationships.any { relationship ->
+                relationship.startNode.properties["name"] == "Alice" &&
+                    relationship.startNode.properties["schema_type"] == "person"
+            },
+        )
+
+        val chunksPath = root.resolve("output/chunks/sample_ds.txt")
+        assertTrue(chunksPath.exists())
+        val chunksText = chunksPath.readText()
+        assertTrue(chunksText.contains("\\n"))
+        assertTrue(chunksText.contains("\\t"))
+
+        assertTrue(observedPrompt.contains("\"Nodes\""))
+        assertTrue(observedPrompt.contains("Alice works at Acme"))
+    }
+
+    @Test
+    fun `agent mode applies new_schema_types to schema file`() {
+        val root = Files.createTempDirectory("youtu-graphrag-ktbuilder-schema-evolution-test")
+        val schemaPath = root.resolve("schemas/demo.json").also { it.parent.createDirectories() }
+        val corpusPath = root.resolve("data/agent_corpus.json").also { it.parent.createDirectories() }
+
+        schemaPath.writeText(
+            """
+            {
+              "Nodes": ["person"],
+              "Relations": ["related_to"],
+              "Attributes": ["name"]
+            }
+            """.trimIndent(),
+        )
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+            corpusPath.toFile(),
+            listOf(
+                mapOf(
+                    "title" to "Doc Beta",
+                    "text" to "Alice discovered Relic X in Site Y.",
+                ),
+            ),
+        )
+
+        val config = createTestConfig(root = root, mode = "agent")
+        val llmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String =
+                    """
+                    {
+                      "attributes": {
+                        "Relic X": ["material: obsidian"]
+                      },
+                      "triples": [
+                        ["Alice", "discovered_in", "Site Y"]
+                      ],
+                      "entity_types": {
+                        "Alice": "person",
+                        "Relic X": "artifact",
+                        "Site Y": "location"
+                      },
+                      "new_schema_types": {
+                        "nodes": ["artifact", "location"],
+                        "relations": ["discovered_in"],
+                        "attributes": ["material"]
+                      }
+                    }
+                    """.trimIndent()
+            }
+
+        val builder =
+            KTBuilder(
+                datasetName = "agent_ds",
+                schemaPath = schemaPath.pathString,
+                mode = "agent",
+                config = config,
+                rootDir = root,
+                llmClient = llmClient,
+            )
+
+        val relationships = builder.buildKnowledgeGraph(corpusPath.pathString)
+        assertTrue(relationships.any { relationship -> relationship.relation == "discovered_in" })
+
+        val evolvedSchema = mapper.readTree(schemaPath.toFile())
+        val nodes = evolvedSchema.path("Nodes").map { value -> value.asText() }
+        val relations = evolvedSchema.path("Relations").map { value -> value.asText() }
+        val attributes = evolvedSchema.path("Attributes").map { value -> value.asText() }
+
+        assertTrue("artifact" in nodes)
+        assertTrue("location" in nodes)
+        assertTrue("discovered_in" in relations)
+        assertTrue("material" in attributes)
+    }
+
+    @Test
+    fun `construction prompt uses novel alias for anony_chs dataset`() {
+        val root = Files.createTempDirectory("youtu-graphrag-ktbuilder-prompt-alias-test")
+        val schemaPath = root.resolve("schemas/demo.json").also { it.parent.createDirectories() }
+        val corpusPath = root.resolve("data/novel_corpus.json").also { it.parent.createDirectories() }
+
+        schemaPath.writeText("""{"Nodes":["person"],"Relations":[],"Attributes":[]}""")
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+            corpusPath.toFile(),
+            listOf(
+                mapOf(
+                    "title" to "Novel",
+                    "text" to "PERSON#1 met PERSON#2.",
+                ),
+            ),
+        )
+
+        val config =
+            createTestConfig(
+                root = root,
+                mode = "noagent",
+                extraOverrides =
+                    mapOf(
+                        "prompts" to
+                            mapOf(
+                                "construction" to
+                                    mapOf(
+                                        "general" to "GENERAL::{chunk}",
+                                        "novel" to "NOVEL::{chunk}",
+                                    ),
+                            ),
+                    ),
+            )
+
+        var observedPrompt = ""
+        val llmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String {
+                    observedPrompt = prompt
+                    return "{}"
+                }
+            }
+
+        val builder =
+            KTBuilder(
+                datasetName = "anony_chs",
+                schemaPath = schemaPath.pathString,
+                mode = "noagent",
+                config = config,
+                rootDir = root,
+                llmClient = llmClient,
+            )
+
+        val relationships = builder.buildKnowledgeGraph(corpusPath.pathString)
+        assertTrue(relationships.isNotEmpty())
+        assertTrue(observedPrompt.startsWith("NOVEL::"))
+    }
+
+    @Test
+    fun `construction prompt uses novel_eng_agent alias for anony_eng dataset in agent mode`() {
+        val root = Files.createTempDirectory("youtu-graphrag-ktbuilder-prompt-alias-agent-test")
+        val schemaPath = root.resolve("schemas/demo.json").also { it.parent.createDirectories() }
+        val corpusPath = root.resolve("data/novel_eng_corpus.json").also { it.parent.createDirectories() }
+
+        schemaPath.writeText("""{"Nodes":["person"],"Relations":[],"Attributes":[]}""")
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+            corpusPath.toFile(),
+            listOf(
+                mapOf(
+                    "title" to "NovelEng",
+                    "text" to "PERSON#1 met PERSON#2.",
+                ),
+            ),
+        )
+
+        val config =
+            createTestConfig(
+                root = root,
+                mode = "agent",
+                extraOverrides =
+                    mapOf(
+                        "prompts" to
+                            mapOf(
+                                "construction" to
+                                    mapOf(
+                                        "general_agent" to "GENERAL_AGENT::{chunk}",
+                                        "novel_eng_agent" to "NOVEL_ENG_AGENT::{chunk}",
+                                    ),
+                            ),
+                    ),
+            )
+
+        var observedPrompt = ""
+        val llmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String {
+                    observedPrompt = prompt
+                    return "{}"
+                }
+            }
+
+        val builder =
+            KTBuilder(
+                datasetName = "anony_eng",
+                schemaPath = schemaPath.pathString,
+                mode = "agent",
+                config = config,
+                rootDir = root,
+                llmClient = llmClient,
+            )
+
+        builder.buildKnowledgeGraph(corpusPath.pathString)
+        assertTrue(observedPrompt.startsWith("NOVEL_ENG_AGENT::"))
+    }
+
+    private fun createTestConfig(
+        root: Path,
+        mode: String,
+        extraOverrides: Map<String, Any?> = emptyMap(),
+    ): ConfigManager {
+        val config = ConfigManager("config/base_config.json")
+
+        val overrides =
+            mutableMapOf<String, Any?>(
+                "construction" to
+                    mapOf(
+                        "mode" to mode,
+                        "chunk_size" to 4096,
+                        "overlap" to 128,
+                        "min_tail_tokens" to 32,
+                        "datasets_no_chunk" to emptyList<String>(),
+                    ),
+                "output" to
+                    mapOf(
+                        "base_dir" to root.resolve("output").toString(),
+                        "graphs_dir" to root.resolve("output/graphs").toString(),
+                        "chunks_dir" to root.resolve("output/chunks").toString(),
+                        "logs_dir" to root.resolve("output/logs").toString(),
+                    ),
+                "retrieval" to
+                    mapOf(
+                        "cache_dir" to root.resolve("retriever/faiss_cache_new").toString(),
+                    ),
+            )
+        overrides.putAll(extraOverrides)
+
+        config.overrideConfig(overrides)
+        assertEquals(mode, config.construction.mode)
+        return config
+    }
+}

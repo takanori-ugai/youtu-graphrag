@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.PropertyNamingStrategies
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
@@ -14,19 +13,13 @@ class ConfigManager(
     configPath: String? = null,
 ) {
     private val logger = KotlinLogging.logger {}
-    private val yamlMapper: ObjectMapper =
-        ObjectMapper(YAMLFactory())
-            .registerKotlinModule()
-            .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-
     private val jsonMapper: ObjectMapper =
         ObjectMapper()
             .registerKotlinModule()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
-    val configPath: Path = Path.of(configPath ?: defaultConfigPath())
+    val configPath: Path = Path.of(configPath ?: DEFAULT_CONFIG_PATH)
     private var rawConfig: MutableMap<String, Any?> = mutableMapOf()
     private var parsedConfig: AppConfig = AppConfig()
 
@@ -69,10 +62,13 @@ class ConfigManager(
 
     fun loadConfig() {
         require(Files.exists(configPath)) { "Configuration file not found: $configPath" }
+        require(configPath.toString().endsWith(".json")) {
+            "Only JSON configuration files are supported: $configPath"
+        }
 
         rawConfig =
             Files.newInputStream(configPath).use { stream ->
-                yamlMapper.readValue(stream, object : TypeReference<MutableMap<String, Any?>>() {})
+                jsonMapper.readValue(stream, object : TypeReference<MutableMap<String, Any?>>() {})
             }
 
         parseConfig()
@@ -126,14 +122,13 @@ class ConfigManager(
 
     fun saveConfig(outputPath: String) {
         val path = Path.of(outputPath)
+        require(path.toString().endsWith(".json")) {
+            "Only JSON configuration files are supported: $path"
+        }
         Files.createDirectories(path.parent ?: Path.of("."))
 
         Files.newOutputStream(path).use { stream ->
-            if (path.toString().endsWith(".json")) {
-                jsonMapper.writerWithDefaultPrettyPrinter().writeValue(stream, rawConfig)
-            } else {
-                yamlMapper.writeValue(stream, rawConfig)
-            }
+            jsonMapper.writerWithDefaultPrettyPrinter().writeValue(stream, rawConfig)
         }
     }
 
@@ -149,7 +144,7 @@ class ConfigManager(
     }
 
     private fun parseConfig() {
-        parsedConfig = yamlMapper.convertValue(rawConfig, AppConfig::class.java)
+        parsedConfig = jsonMapper.convertValue(rawConfig, AppConfig::class.java)
     }
 
     private fun validateConfig() {
@@ -194,9 +189,8 @@ class ConfigManager(
     @Suppress("UNCHECKED_CAST")
     private fun toStringAnyMap(map: Map<*, *>): Map<String, Any?> = map as Map<String, Any?>
 
-    private fun defaultConfigPath(): String = "config/base_config.yaml"
-
     companion object {
+        private const val DEFAULT_CONFIG_PATH = "config/base_config.json"
         private val PLACEHOLDER_REGEX = Regex("\\{([^{}]+)}")
     }
 }

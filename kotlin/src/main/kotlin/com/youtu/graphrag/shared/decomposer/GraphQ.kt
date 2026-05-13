@@ -53,17 +53,35 @@ class GraphQ(
         schema: String,
         question: String,
     ): String {
-        val promptType = decompositionPromptType()
-        val template = config.prompts["decomposition"]?.get(promptType)
+        val promptCandidates = decompositionPromptCandidates()
+        promptCandidates.forEach { promptType ->
+            val template = config.prompts["decomposition"]?.get(promptType) ?: return@forEach
+            val rendered =
+                runCatching {
+                    config.getPromptFormatted(
+                        category = "decomposition",
+                        promptType = promptType,
+                        variables =
+                            mapOf(
+                                "ontology" to schema,
+                                "question" to question,
+                            ),
+                    )
+                }.getOrElse {
+                    template
+                        .replace("{ontology}", schema)
+                        .replace("{question}", question)
+                }
+            return rendered
+        }
 
-        val resolvedTemplate =
-            if (template.isNullOrBlank()) {
-                inlineFallbackPrompt(promptType)
+        val fallbackPromptType =
+            if (promptCandidates.any { candidate -> candidate == "anony_chs" || candidate == "novel" }) {
+                "novel"
             } else {
-                template
+                "general"
             }
-
-        return resolvedTemplate
+        return inlineFallbackPrompt(fallbackPromptType)
             .replace("{ontology}", schema)
             .replace("{question}", question)
     }
@@ -94,11 +112,15 @@ class GraphQ(
             """.trimIndent()
         }
 
-    private fun decompositionPromptType(): String =
-        if (datasetName == "anony_chs") {
-            "novel"
-        } else {
-            "general"
+    private fun decompositionPromptCandidates(): List<String> =
+        when (datasetName.lowercase()) {
+            "anony_chs" -> listOf("anony_chs", "novel", "general")
+
+            "novel",
+            "novel_chs",
+            -> listOf("novel", "anony_chs", "general")
+
+            else -> listOf("general")
         }
 
     private fun parseDecomposition(response: String): Pair<List<Map<String, String>>, Map<String, List<String>>>? {

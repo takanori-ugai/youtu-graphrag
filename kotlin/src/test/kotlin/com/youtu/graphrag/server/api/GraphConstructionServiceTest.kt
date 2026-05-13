@@ -158,7 +158,7 @@ class GraphConstructionServiceTest {
     }
 
     private fun createTestConfig(root: Path): ConfigManager {
-        val config = ConfigManager("config/base_config.yaml")
+        val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
             mapOf(
                 "construction" to
