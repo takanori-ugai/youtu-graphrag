@@ -1,10 +1,15 @@
 package com.youtu.graphrag.server.api
 
 import com.youtu.graphrag.server.api.contracts.GraphConstructionRequest
+import com.youtu.graphrag.server.api.contracts.GraphConstructionResponse
 import com.youtu.graphrag.server.api.contracts.ProgressEvent
 import com.youtu.graphrag.server.api.contracts.QaCompleteEvent
+import com.youtu.graphrag.server.api.contracts.QaUpdateEvent
 import com.youtu.graphrag.server.api.contracts.QuestionResponse
+import com.youtu.graphrag.server.api.contracts.QuestionRequest
 import com.youtu.graphrag.server.api.contracts.ReasoningStep
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -79,5 +84,48 @@ class ApiContractsTest {
         assertTrue("\"stage\":\"construction\"" in progressEncoded)
         assertTrue("\"answer_preview\":\"Tokyo\"" in completeEncoded)
         assertTrue("\"type\":\"qa_complete\"" in completeEncoded)
+    }
+
+    @Test
+    fun `request and response contracts keep snake_case api compatibility`() {
+        val requestEncoded =
+            json.encodeToString(
+                QuestionRequest(
+                    question = "Who leads Project Alpha?",
+                    datasetName = "demo",
+                ),
+            )
+        val graphResponseEncoded =
+            json.encodeToString(
+                GraphConstructionResponse(
+                    success = true,
+                    message = "ok",
+                    graphData =
+                        JsonObject(
+                            mapOf(
+                                "nodes" to JsonPrimitive("[]"),
+                            ),
+                        ),
+                ),
+            )
+
+        assertTrue("\"dataset_name\":\"demo\"" in requestEncoded)
+        assertTrue("\"graph_data\"" in graphResponseEncoded)
+    }
+
+    @Test
+    fun `qa update event preserves websocket envelope contract`() {
+        val encoded =
+            json.encodeToString(
+                QaUpdateEvent(
+                    stage = "ircot",
+                    message = "Iterative retrieval step 1...",
+                    timestamp = "2026-05-13T00:00:00Z",
+                ),
+            )
+
+        assertTrue("\"type\":\"qa_update\"" in encoded)
+        assertTrue("\"stage\":\"ircot\"" in encoded)
+        assertTrue("\"message\":\"Iterative retrieval step 1...\"" in encoded)
     }
 }

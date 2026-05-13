@@ -186,8 +186,8 @@ class GraphConstructionService(
         val nodeSeen = linkedSetOf<String>()
 
         relationships.forEach { relationship ->
-            val startName = relationship.startNode.properties["name"].orEmpty()
-            val endName = relationship.endNode.properties["name"].orEmpty()
+            val startName = relationship.startNode.properties["name"]?.toString().orEmpty()
+            val endName = relationship.endNode.properties["name"]?.toString().orEmpty()
 
             addNodeIfNeeded(nodeSeen, nodes, categories, relationship.startNode.label, startName)
             addNodeIfNeeded(nodeSeen, nodes, categories, relationship.endNode.label, endName)

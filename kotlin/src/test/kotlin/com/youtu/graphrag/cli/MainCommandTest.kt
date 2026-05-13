@@ -1,5 +1,8 @@
 package com.youtu.graphrag.cli
 
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.youtu.graphrag.shared.llm.LlmClient
 import picocli.CommandLine
 import java.nio.file.Files
@@ -127,15 +130,19 @@ class MainCommandTest {
         assertTrue(qaResultPath.exists(), "QA result output should be generated")
         assertTrue(qaSummaryPath.exists(), "QA summary output should be generated")
 
-        val resultJson = qaResultPath.readText()
-        assertTrue(resultJson.contains("Who leads Project Alpha?"))
-        assertTrue(resultJson.contains("Alice"))
-        assertTrue(resultJson.contains("\"eval_result\" : \"1\""))
-        assertTrue(resultJson.contains("\"eval_method\" : \"llm\""))
-        assertTrue(resultJson.contains("\"reasoning_steps\""))
-        val summaryJson = qaSummaryPath.readText()
-        assertTrue(summaryJson.contains("\"total_questions\" : 1"))
-        assertTrue(summaryJson.contains("\"accuracy\" : 1.0"))
+        val mapper = ObjectMapper().registerKotlinModule()
+        val resultNode: JsonNode = mapper.readTree(qaResultPath.toFile())
+        assertTrue(resultNode.isArray, "QA results should be an array")
+        val firstResult = resultNode[0]
+        assertEquals("Who leads Project Alpha?", firstResult["question"].asText())
+        assertEquals("Alice is the leader.", firstResult["answer"].asText())
+        assertEquals("1", firstResult["eval_result"].asText())
+        assertEquals("llm", firstResult["eval_method"].asText())
+        assertTrue(firstResult.has("reasoning_steps"), "Should have reasoning steps")
+
+        val summaryNode: JsonNode = mapper.readTree(qaSummaryPath.toFile())
+        assertEquals(1, summaryNode["total_questions"].asInt())
+        assertEquals(1.0, summaryNode["accuracy"].asDouble())
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.youtu.graphrag.shared.config.ConfigManager
 import com.youtu.graphrag.shared.decomposer.GraphQ
 import com.youtu.graphrag.shared.llm.LlmClient
 import com.youtu.graphrag.shared.llm.LlmClientFactory
+import com.youtu.graphrag.shared.retriever.IrcotPromptSource
 import com.youtu.graphrag.shared.retriever.KTRetriever
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +47,7 @@ class QuestionAnsweringService(
     private val config: ConfigManager,
     private val rootDir: Path = Path.of("."),
     private val llmClient: LlmClient = LlmClientFactory.fromEnvironment(),
+    private val ircotPromptSource: IrcotPromptSource = IrcotPromptSource.BACKEND,
 ) {
     private val logger = KotlinLogging.logger {}
 
@@ -207,9 +209,11 @@ class QuestionAnsweringService(
                         val ircotPrompt =
                             ktRetriever.generateIrcotPrompt(
                                 currentQuery = currentQuery,
+                                originalQuestion = question,
                                 context = loopContext,
                                 previousThoughts = previousThoughts,
                                 step = stepIndex,
+                                promptSource = ircotPromptSource,
                             )
                         val heuristicFallback =
                             if (allTriples.isNotEmpty() || chunksSnapshotBefore.isNotEmpty()) {
@@ -544,7 +548,7 @@ class QuestionAnsweringService(
     }
 
     private fun tokenize(input: String): Set<String> {
-        val tokenRegex = Regex("[A-Za-z0-9_]{2,}")
+        val tokenRegex = Regex("[\\p{L}\\p{N}_]{2,}")
         return tokenRegex.findAll(input.lowercase()).map { it.value }.toSet()
     }
 

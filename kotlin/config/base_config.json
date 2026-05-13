@@ -6,8 +6,8 @@
       "2wiki",
       "musique",
       "graphrag-bench",
-      "annoy_chs",
-      "annoy_eng",
+      "anony_chs",
+      "anony_eng",
       "demo"
     ],
     "max_workers": 32,

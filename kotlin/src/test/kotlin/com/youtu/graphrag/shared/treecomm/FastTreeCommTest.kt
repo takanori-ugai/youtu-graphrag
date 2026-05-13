@@ -60,7 +60,7 @@ class FastTreeCommTest {
             communities
                 .flatMap { community -> (community["keywords"] as? List<*>)?.map { it.toString() }.orEmpty() }
                 .toSet()
-        assertTrue("project" in keywords || "alpha" in keywords)
-        assertTrue("team" in keywords)
+        assertTrue("Project Alpha" in keywords)
+        assertTrue("Bob Team" in keywords || "Carol Team" in keywords)
     }
 }

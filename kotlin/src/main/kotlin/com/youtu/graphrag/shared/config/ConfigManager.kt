@@ -149,10 +149,10 @@ class ConfigManager(
 
     private fun validateConfig() {
         datasets.forEach { (datasetName, datasetConfig) ->
-            if (!Files.exists(Path.of(datasetConfig.corpusPath))) {
+            if (datasetConfig.corpusPath.isBlank() || !Files.exists(Path.of(datasetConfig.corpusPath))) {
                 logger.warn { "Corpus path not found for $datasetName: ${datasetConfig.corpusPath}" }
             }
-            if (!Files.exists(Path.of(datasetConfig.schemaPath))) {
+            if (datasetConfig.schemaPath.isBlank() || !Files.exists(Path.of(datasetConfig.schemaPath))) {
                 logger.warn { "Schema path not found for $datasetName: ${datasetConfig.schemaPath}" }
             }
         }

@@ -10,6 +10,7 @@ import com.youtu.graphrag.shared.config.ConfigProvider
 import com.youtu.graphrag.shared.constructor.KTBuilder
 import com.youtu.graphrag.shared.llm.LlmClient
 import com.youtu.graphrag.shared.llm.LlmClientFactory
+import com.youtu.graphrag.shared.retriever.IrcotPromptSource
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import picocli.CommandLine
@@ -161,6 +162,7 @@ class MainCommand(
                     QuestionAnsweringService(
                         config = config,
                         llmClient = llmClient,
+                        ircotPromptSource = IrcotPromptSource.MAIN,
                     )
                 var evaluatedCount = 0
                 var correctCount = 0
@@ -266,11 +268,12 @@ class MainCommand(
                     }
                 }
 
+                val sanitizedName = sanitizeDatasetName(datasetName)
                 val logsDir = resolvePath(config.output.logsDir).also { it.createDirectories() }
-                val outputFile = logsDir.resolve("${datasetName}_qa_results.json")
+                val outputFile = logsDir.resolve("${sanitizedName}_qa_results.json")
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(outputFile.toFile(), qaResults)
                 logger.info { "Saved QA results for '$datasetName' to $outputFile" }
-                val summaryFile = logsDir.resolve("${datasetName}_qa_summary.json")
+                val summaryFile = logsDir.resolve("${sanitizedName}_qa_summary.json")
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(
                     summaryFile.toFile(),
                     mapOf(
@@ -306,9 +309,10 @@ class MainCommand(
         datasetName: String,
         config: ConfigManager,
     ) {
-        deleteRecursivelyIfExists(resolvePath(config.retrieval.cacheDir).resolve(datasetName))
-        deleteRecursivelyIfExists(resolvePath(config.output.chunksDir).resolve("$datasetName.txt"))
-        deleteRecursivelyIfExists(resolvePath(config.output.graphsDir).resolve("${datasetName}_new.json"))
+        val sanitizedName = sanitizeDatasetName(datasetName)
+        deleteRecursivelyIfExists(resolvePath(config.retrieval.cacheDir).resolve(sanitizedName))
+        deleteRecursivelyIfExists(resolvePath(config.output.chunksDir).resolve("$sanitizedName.txt"))
+        deleteRecursivelyIfExists(resolvePath(config.output.graphsDir).resolve("${sanitizedName}_new.json"))
 
         deleteDatasetPrefixEntries(resolvePath(config.output.logsDir), datasetName)
         deleteDatasetPrefixEntries(resolvePath(config.output.chunksDir), datasetName)
@@ -323,13 +327,20 @@ class MainCommand(
             return
         }
 
-        val prefix = "${datasetName}_"
+        val prefix = "${sanitizeDatasetName(datasetName)}_"
         directory.listDirectoryEntries().forEach { entry ->
             if (entry.fileName.toString().startsWith(prefix)) {
                 deleteRecursivelyIfExists(entry)
             }
         }
     }
+
+    private fun sanitizeDatasetName(name: String): String =
+        name
+            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            .replace(Regex("\\.+"), ".")
+            .trim { it == '.' || it == '_' || it == '-' }
+            .ifBlank { "default_dataset" }
 
     private fun deleteRecursivelyIfExists(path: Path) {
         if (!path.exists()) {

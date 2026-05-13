@@ -40,9 +40,12 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required:
+                - files
               properties:
                 files:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     format: binary
@@ -161,6 +164,8 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required:
+                - file
               properties:
                 file:
                   type: string

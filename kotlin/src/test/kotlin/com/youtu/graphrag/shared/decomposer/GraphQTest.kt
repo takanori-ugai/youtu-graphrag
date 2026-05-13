@@ -17,10 +17,14 @@ class GraphQTest {
         val graphQ = GraphQ(datasetName = "demo", config = config, llmClient = emptyLlmClient())
 
         val result = graphQ.decompose("Who leads Project Alpha?", "schemas/demo.json")
-        val subQuestions = result["sub_questions"] as List<*>
+        val subQuestions =
+            (result["sub_questions"] as? List<*>)
+                ?: error("Expected 'sub_questions' list in decompose result")
 
         assertEquals(1, subQuestions.size)
-        val first = subQuestions.first() as Map<*, *>
+        val first =
+            (subQuestions.first() as? Map<*, *>)
+                ?: error("Expected sub-question map in sub_questions list")
         assertEquals("Who leads Project Alpha?", first["sub-question"])
     }
 
@@ -34,11 +38,17 @@ class GraphQTest {
                 "Who leads Project Alpha and where is Project Alpha based?",
                 "schemas/demo.json",
             )
-        val subQuestions = result["sub_questions"] as List<*>
+        val subQuestions =
+            (result["sub_questions"] as? List<*>)
+                ?: error("Expected 'sub_questions' list in decompose result")
 
         assertEquals(2, subQuestions.size)
-        val first = subQuestions[0] as Map<*, *>
-        val second = subQuestions[1] as Map<*, *>
+        val first =
+            (subQuestions[0] as? Map<*, *>)
+                ?: error("Expected first sub-question map")
+        val second =
+            (subQuestions[1] as? Map<*, *>)
+                ?: error("Expected second sub-question map")
         assertTrue((first["sub-question"] as String).endsWith("?"))
         assertTrue((second["sub-question"] as String).endsWith("?"))
     }
@@ -70,11 +80,18 @@ class GraphQTest {
             )
 
         val result = graphQ.decompose("Complex question?", "schemas/demo.json")
-        val subQuestions = result["sub_questions"] as List<*>
-        val involvedTypes = result["involved_types"] as Map<*, *>
+        val subQuestions =
+            (result["sub_questions"] as? List<*>)
+                ?: error("Expected 'sub_questions' list")
+        val involvedTypes =
+            (result["involved_types"] as? Map<*, *>)
+                ?: error("Expected 'involved_types' map")
 
         assertEquals(2, subQuestions.size)
-        assertEquals(2, (involvedTypes["nodes"] as List<*>).size)
+        val nodes =
+            (involvedTypes["nodes"] as? List<*>)
+                ?: error("Expected 'nodes' list in involved_types")
+        assertEquals(2, nodes.size)
     }
 
     @Test
@@ -97,13 +114,20 @@ class GraphQTest {
             )
 
         val result = graphQ.decompose("Question", "schemas/demo.json")
-        val subQuestions = result["sub_questions"] as List<*>
-        val involvedTypes = result["involved_types"] as Map<*, *>
+        val subQuestions =
+            (result["sub_questions"] as? List<*>)
+                ?: error("Expected 'sub_questions' list")
+        val involvedTypes =
+            (result["involved_types"] as? Map<*, *>)
+                ?: error("Expected 'involved_types' map")
 
         assertEquals(2, subQuestions.size)
-        assertTrue((involvedTypes["nodes"] as List<*>).isEmpty())
-        assertTrue((involvedTypes["relations"] as List<*>).isEmpty())
-        assertTrue((involvedTypes["attributes"] as List<*>).isEmpty())
+        val nodes = (involvedTypes["nodes"] as? List<*>) ?: error("Expected 'nodes' list")
+        val relations = (involvedTypes["relations"] as? List<*>) ?: error("Expected 'relations' list")
+        val attributes = (involvedTypes["attributes"] as? List<*>) ?: error("Expected 'attributes' list")
+        assertTrue(nodes.isEmpty())
+        assertTrue(relations.isEmpty())
+        assertTrue(attributes.isEmpty())
     }
 
     @Test

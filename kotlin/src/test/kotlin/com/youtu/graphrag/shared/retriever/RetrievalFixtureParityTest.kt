@@ -31,6 +31,7 @@ private data class RetrievalParityFixture(
     val name: String,
     val question: String,
     val involvedTypes: Map<String, List<String>>,
+    val configOverrides: Map<String, Any?> = emptyMap(),
     val topK: Int,
     val recallPaths: Int,
     val graph: List<GraphRelationship>,
@@ -52,6 +53,9 @@ class RetrievalFixtureParityTest {
         fixtures.forEach { fixture ->
             val root = Files.createTempDirectory("youtu-graphrag-retrieval-fixture-${fixture.name}")
             val config = createTestConfig(root)
+            if (fixture.configOverrides.isNotEmpty()) {
+                config.overrideConfig(fixture.configOverrides)
+            }
             val datasetName = "fixture_${fixture.name}"
             val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
             val chunkPath = root.resolve("output/chunks/$datasetName.txt")
@@ -78,11 +82,23 @@ class RetrievalFixtureParityTest {
                     involvedTypes = fixture.involvedTypes,
                 )
 
-            val triples = (result["triples"] as List<*>).map { value -> value.toString() }
-            val chunkIds = (result["chunk_ids"] as List<*>).map { value -> value.toString() }
-            val chunkContents = (result["chunk_contents"] as List<*>).map { value -> value.toString() }
-            val chunkRetrievalLines = (result["chunk_retrieval_results"] as List<*>).map { value -> value.toString() }
-            val retrievalStrategy = result["retrieval_strategy"].toString()
+            val triples =
+                (result["triples"] as? List<*>)?.map { value -> value.toString() }
+                    ?: error("Expected 'triples' list in result for fixture '${fixture.name}'")
+            val chunkIds =
+                (result["chunk_ids"] as? List<*>)?.map { value -> value.toString() }
+                    ?: error("Expected 'chunk_ids' list in result for fixture '${fixture.name}'")
+            val chunkContents =
+                (result["chunk_contents"] as? List<*>)?.map { value -> value.toString() }
+                    ?: error("Expected 'chunk_contents' list in result for fixture '${fixture.name}'")
+            val chunkRetrievalLines =
+                (result["chunk_retrieval_results"] as? List<*>)?.map { value -> value.toString() }
+                    ?: error("Expected 'chunk_retrieval_results' list in result for fixture '${fixture.name}'")
+            val retrievalStrategy =
+                result["retrieval_strategy"]?.toString()
+                    ?: error("Expected 'retrieval_strategy' in result for fixture '${fixture.name}'")
+            val resultTopK = (result["top_k"] as? Number)?.toInt()
+            val resultRecallPaths = (result["recall_paths"] as? Number)?.toInt()
 
             assertEquals(fixture.expected.triples, triples, "triples parity failed for fixture '${fixture.name}'")
             assertEquals(fixture.expected.chunkIds, chunkIds, "chunk_ids parity failed for fixture '${fixture.name}'")
@@ -106,6 +122,8 @@ class RetrievalFixtureParityTest {
                 retrievalStrategy.startsWith(fixture.expected.retrievalStrategyPrefix),
                 "retrieval_strategy parity failed for fixture '${fixture.name}': '$retrievalStrategy'",
             )
+            assertEquals(fixture.topK, resultTopK, "top_k metadata mismatch for fixture '${fixture.name}'")
+            assertEquals(fixture.recallPaths, resultRecallPaths, "recall_paths metadata mismatch for fixture '${fixture.name}'")
         }
     }
 

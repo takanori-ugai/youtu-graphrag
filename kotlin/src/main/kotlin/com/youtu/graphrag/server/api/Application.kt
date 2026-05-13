@@ -756,14 +756,7 @@ suspend fun sendProgressUpdate(
 ) {
     wsManager.sendMessage(
         clientId = clientId,
-        message =
-            mapOf(
-                "type" to "progress",
-                "stage" to stage,
-                "progress" to progress,
-                "message" to message,
-                "timestamp" to websocketTimestamp(),
-            ),
+        message = progressPayload(stage = stage, progress = progress, message = message),
     )
 }
 
@@ -776,13 +769,7 @@ suspend fun sendStageEvent(
 ) {
     wsManager.sendMessage(
         clientId = clientId,
-        message =
-            mapOf(
-                "type" to type,
-                "stage" to stage,
-                "message" to message,
-                "timestamp" to websocketTimestamp(),
-            ),
+        message = stageEventPayload(type = type, stage = stage, message = message),
     )
 }
 
@@ -792,19 +779,51 @@ suspend fun sendQaUpdate(
     stage: String,
     extra: Map<String, Any?> = emptyMap(),
 ) {
-    val payload =
-        mutableMapOf<String, Any?>(
-            "type" to "qa_update",
-            "stage" to stage,
-            "timestamp" to websocketTimestamp(),
-        )
-    payload.putAll(extra)
-
     wsManager.sendMessage(
         clientId = clientId,
-        message = payload,
+        message = qaUpdatePayload(stage = stage, extra = extra),
     )
 }
+
+internal fun progressPayload(
+    stage: String,
+    progress: Int,
+    message: String,
+    timestamp: String = websocketTimestamp(),
+): Map<String, Any> =
+    mapOf(
+        "type" to "progress",
+        "stage" to stage,
+        "progress" to progress,
+        "message" to message,
+        "timestamp" to timestamp,
+    )
+
+internal fun stageEventPayload(
+    type: String,
+    stage: String,
+    message: String,
+    timestamp: String = websocketTimestamp(),
+): Map<String, Any> =
+    mapOf(
+        "type" to type,
+        "stage" to stage,
+        "message" to message,
+        "timestamp" to timestamp,
+    )
+
+internal fun qaUpdatePayload(
+    stage: String,
+    extra: Map<String, Any?> = emptyMap(),
+    timestamp: String = websocketTimestamp(),
+): Map<String, Any?> =
+    mutableMapOf<String, Any?>(
+        "type" to "qa_update",
+        "stage" to stage,
+        "timestamp" to timestamp,
+    ).apply {
+        putAll(extra)
+    }
 
 private fun websocketTimestamp(): String = LocalDateTime.now().toString()
 

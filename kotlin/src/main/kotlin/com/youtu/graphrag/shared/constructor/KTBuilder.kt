@@ -14,6 +14,7 @@ import com.youtu.graphrag.shared.graph.GraphRelationship
 import com.youtu.graphrag.shared.llm.LlmClient
 import com.youtu.graphrag.shared.llm.LlmClientFactory
 import com.youtu.graphrag.shared.llm.LlmOutputParser
+import com.youtu.graphrag.shared.treecomm.FastTreeComm
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
 import java.nio.file.Path
@@ -66,9 +67,10 @@ class KTBuilder(
     private val tokenizer: Encoding = TOKENIZER_REGISTRY.getEncoding(EncodingType.CL100K_BASE)
 
     fun buildKnowledgeGraph(corpusPath: String): List<GraphRelationship> {
-        if (datasetName.isBlank() || schemaPath.isBlank() || corpusPath.isBlank() || mode.isBlank()) {
-            return emptyList()
-        }
+        require(datasetName.isNotBlank()) { "datasetName must not be blank" }
+        require(schemaPath.isNotBlank()) { "schemaPath must not be blank" }
+        require(corpusPath.isNotBlank()) { "corpusPath must not be blank" }
+        require(mode.isNotBlank()) { "mode must not be blank" }
 
         val corpusFile = resolvePath(corpusPath)
         require(corpusFile.exists()) { "Corpus file not found: $corpusFile" }
@@ -376,7 +378,108 @@ class KTBuilder(
             }
         }
 
+        addCommunityRelationships(
+            relationships = relationships,
+            entityByName = entityByName,
+        )
         return relationships
+    }
+
+    private fun addCommunityRelationships(
+        relationships: MutableList<GraphRelationship>,
+        entityByName: Map<String, GraphNode>,
+    ) {
+        val entityRelationships =
+            relationships.filter { relationship ->
+                relationship.startNode.label == "entity" && relationship.endNode.label == "entity"
+            }
+        if (entityRelationships.isEmpty()) {
+            return
+        }
+
+        val maxCommunities = config.treeComm.maxTotalCommunities.coerceAtLeast(1)
+        val communities =
+            FastTreeComm()
+                .detectCommunities(entityRelationships)
+                .take(maxCommunities)
+
+        communities.forEachIndexed { index, community ->
+            val members =
+                (community["nodes"] as? List<*>)
+                    .orEmpty()
+                    .mapNotNull { value -> value?.toString()?.trim()?.takeIf { it.isNotBlank() } }
+                    .distinct()
+            if (members.size < 2) {
+                return@forEachIndexed
+            }
+
+            val communityId = community["community_id"]?.toString().orEmpty().ifBlank { "community_${index + 1}" }
+            val communityNode =
+                GraphNode(
+                    label = "community",
+                    properties =
+                        mapOf(
+                            "name" to "Community_${index + 1}",
+                            "description" to "Community of ${members.size} members",
+                            "community_id" to communityId,
+                            "node_count" to members.size.toString(),
+                            "edge_count" to community["edge_count"]?.toString().orEmpty(),
+                            "members" to members,
+                        ),
+                )
+
+            members.forEach { memberName ->
+                val memberNode =
+                    entityByName[memberName]
+                        ?: GraphNode(
+                            label = "entity",
+                            properties = mapOf("name" to memberName),
+                        )
+                relationships.add(
+                    GraphRelationship(
+                        startNode = memberNode,
+                        relation = "member_of",
+                        endNode = communityNode,
+                    ),
+                )
+            }
+
+            val keywords =
+                (community["keywords"] as? List<*>)
+                    .orEmpty()
+                    .mapNotNull { value -> value?.toString()?.trim()?.takeIf { it.isNotBlank() } }
+                    .distinct()
+
+            keywords.forEach { keywordName ->
+                val keywordEntity = entityByName[keywordName] ?: return@forEach
+                val keywordNode =
+                    GraphNode(
+                        label = "keyword",
+                        properties = mapOf("name" to keywordName),
+                    )
+                relationships.add(
+                    GraphRelationship(
+                        startNode = keywordEntity,
+                        relation = "represented_by",
+                        endNode = keywordNode,
+                    ),
+                )
+                relationships.add(
+                    GraphRelationship(
+                        startNode = keywordEntity,
+                        relation = "kw_filter_by",
+                        endNode = keywordNode,
+                    ),
+                )
+                relationships.add(
+                    GraphRelationship(
+                        startNode = keywordNode,
+                        relation = "keyword_of",
+                        endNode = communityNode,
+                    ),
+                )
+            }
+        }
     }
 
     private fun extractChunkKnowledge(chunkText: String): ExtractionPayload {
@@ -438,13 +541,11 @@ class KTBuilder(
         val basePromptType =
             when (datasetName.lowercase()) {
                 "anony_chs",
-                "annoy_chs",
                 "novel",
                 "novel_chs",
                 -> "novel"
 
                 "anony_eng",
-                "annoy_eng",
                 "novel_eng",
                 -> "novel_eng"
 
@@ -537,9 +638,9 @@ class KTBuilder(
 
             val dedupKey =
                 EntityTripleKey(
-                    source = sourceNode.properties["name"].orEmpty(),
+                    source = readPropertyAsString(sourceNode, "name"),
                     relation = triple.relation,
-                    target = targetNode.properties["name"].orEmpty(),
+                    target = readPropertyAsString(targetNode, "name"),
                 )
             if (!seenEntityTriples.add(dedupKey)) {
                 return@forEach
@@ -618,7 +719,7 @@ class KTBuilder(
         val normalizedName = entityName.trim()
         entityByName[normalizedName]?.let { return it }
 
-        val properties = linkedMapOf<String, String>()
+        val properties = linkedMapOf<String, Any?>()
         properties["name"] = normalizedName
         properties["chunk id"] = chunkId
         if (!entityType.isNullOrBlank()) {
@@ -633,6 +734,11 @@ class KTBuilder(
         entityByName[normalizedName] = entityNode
         return entityNode
     }
+
+    private fun readPropertyAsString(
+        node: GraphNode,
+        key: String,
+    ): String = node.properties[key]?.toString().orEmpty()
 
     private fun normalizeAttributes(value: Any?): Map<String, List<String>> {
         if (value !is Map<*, *>) {
@@ -848,7 +954,7 @@ class KTBuilder(
         )
 
     private fun extractKeyword(text: String): String? {
-        val tokenRegex = Regex("[A-Za-z0-9_]{3,}")
+        val tokenRegex = Regex("[\\p{L}\\p{N}_]{3,}")
         return tokenRegex.find(text)?.value?.lowercase()
     }
 

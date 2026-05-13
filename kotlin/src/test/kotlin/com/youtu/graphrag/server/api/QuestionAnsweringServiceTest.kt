@@ -505,7 +505,8 @@ class QuestionAnsweringServiceTest {
         object : LlmClient {
             override fun complete(prompt: String): String =
                 when {
-                    prompt.contains("decompose") -> {
+                    prompt.contains("decomposition", ignoreCase = true) ||
+                        prompt.contains("decompose", ignoreCase = true) -> {
                         """
                         {
                           "sub_questions": [

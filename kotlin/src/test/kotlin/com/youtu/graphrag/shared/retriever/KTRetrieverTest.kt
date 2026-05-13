@@ -76,6 +76,93 @@ class KTRetrieverTest {
     }
 
     @Test
+    fun `generateIrcotPrompt selects source-specific template keys`() {
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "prompts" to
+                    mapOf(
+                        "retrieval" to
+                            mapOf(
+                                "general" to "GENERAL::{question}::{context}",
+                                "ircot" to "IRCOT::{current_query}::{step}",
+                                "ircot_backend" to "BACKEND::{original_question}::{current_iteration_query}::{step}",
+                                "ircot_main" to "MAIN::{current_query}::{step}",
+                            ),
+                    ),
+            ),
+        )
+
+        val retriever = createRetriever(datasetName = "demo", config = config)
+
+        val backendPrompt =
+            retriever.generateIrcotPrompt(
+                currentQuery = "Where is Project Alpha based?",
+                originalQuestion = "Where is Project Alpha based?",
+                context = "ctx",
+                previousThoughts = "none",
+                step = 2,
+                promptSource = IrcotPromptSource.BACKEND,
+            )
+        val mainPrompt =
+            retriever.generateIrcotPrompt(
+                currentQuery = "Where is Project Alpha based?",
+                originalQuestion = "Where is Project Alpha based?",
+                context = "ctx",
+                previousThoughts = "none",
+                step = 3,
+                promptSource = IrcotPromptSource.MAIN,
+            )
+
+        assertTrue(backendPrompt.startsWith("BACKEND::"))
+        assertTrue("::2" in backendPrompt)
+        assertTrue(mainPrompt.startsWith("MAIN::"))
+        assertTrue("::3" in mainPrompt)
+    }
+
+    @Test
+    fun `generateIrcotPrompt uses shared ircot template when source-specific keys are absent`() {
+        val config = ConfigManager("config/base_config.json")
+        config.overrideConfig(
+            mapOf(
+                "prompts" to
+                    mapOf(
+                        "retrieval" to
+                            mapOf(
+                                "general" to "GENERAL::{question}::{context}",
+                                "ircot" to "SHARED::{current_query}::{step}",
+                            ),
+                    ),
+            ),
+        )
+
+        val retriever = createRetriever(datasetName = "demo", config = config)
+        val backendPrompt =
+            retriever.generateIrcotPrompt(
+                currentQuery = "current query",
+                originalQuestion = "original question",
+                context = "ctx",
+                previousThoughts = "thought",
+                step = 1,
+                promptSource = IrcotPromptSource.BACKEND,
+            )
+        val mainPrompt =
+            retriever.generateIrcotPrompt(
+                currentQuery = "current query",
+                originalQuestion = "original question",
+                context = "ctx",
+                previousThoughts = "thought",
+                step = 1,
+                promptSource = IrcotPromptSource.MAIN,
+            )
+
+        assertTrue(backendPrompt.startsWith("SHARED::"))
+        assertTrue(mainPrompt.startsWith("SHARED::"))
+        assertTrue("current query" in backendPrompt)
+        assertTrue("::1" in mainPrompt)
+    }
+
+    @Test
     fun `enhanceQuery appends entities and key terms in python-compatible format`() {
         val config = ConfigManager("config/base_config.json")
         config.overrideConfig(
@@ -224,8 +311,12 @@ class KTRetrieverTest {
                     ),
             )
 
-        val triples = (results["triples"] as List<*>).map { value -> value.toString() }
-        val chunkIds = (results["chunk_ids"] as List<*>).map { value -> value.toString() }
+        val triples =
+            (results["triples"] as? List<*>)?.map { value -> value.toString() }
+                ?: error("Expected 'triples' list in results")
+        val chunkIds =
+            (results["chunk_ids"] as? List<*>)?.map { value -> value.toString() }
+                ?: error("Expected 'chunk_ids' list in results")
 
         assertTrue(triples.isNotEmpty())
         assertTrue(triples.first().contains("\"works_at\""))
@@ -282,7 +373,9 @@ class KTRetrieverTest {
             )
 
         val results = retriever.processRetrievalResults(question = "What is related to Alpha?")
-        val triples = (results["triples"] as List<*>).map { value -> value.toString() }
+        val triples =
+            (results["triples"] as? List<*>)?.map { value -> value.toString() }
+                ?: error("Expected 'triples' list in results")
 
         assertTrue(triples.any { triple -> "\"linked_to\"" in triple })
         assertTrue(triples.any { triple -> "\"connected_to\"" in triple })
@@ -329,10 +422,18 @@ class KTRetrieverTest {
             )
 
         val results = retriever.processRetrievalResults(question = "Give Beta details")
-        val chunkIds = (results["chunk_ids"] as List<*>).map { value -> value.toString() }
-        val chunkContents = (results["chunk_contents"] as List<*>).map { value -> value.toString() }
-        val chunkContentsById = (results["chunk_contents_by_id"] as Map<*, *>).mapValues { entry -> entry.value.toString() }
-        val chunkRetrievalResults = (results["chunk_retrieval_results"] as List<*>).map { value -> value.toString() }
+        val chunkIds =
+            (results["chunk_ids"] as? List<*>)?.map { value -> value.toString() }
+                ?: error("Expected 'chunk_ids' list")
+        val chunkContents =
+            (results["chunk_contents"] as? List<*>)?.map { value -> value.toString() }
+                ?: error("Expected 'chunk_contents' list")
+        val chunkContentsById =
+            (results["chunk_contents_by_id"] as? Map<*, *>)?.mapValues { entry -> entry.value.toString() }
+                ?: error("Expected 'chunk_contents_by_id' map")
+        val chunkRetrievalResults =
+            (results["chunk_retrieval_results"] as? List<*>)?.map { value -> value.toString() }
+                ?: error("Expected 'chunk_retrieval_results' list")
 
         assertEquals(2, chunkIds.size)
         assertTrue("c1" in chunkIds)

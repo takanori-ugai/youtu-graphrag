@@ -11,22 +11,31 @@ class FastTreeComm {
         }
 
         val nodeById = linkedMapOf<String, GraphNode>()
-        val adjacency = linkedMapOf<String, MutableSet<String>>()
+        val adjacency = linkedMapOf<String, MutableMap<String, Int>>()
 
         relationships.forEach { relationship ->
             val sourceId = nodeId(relationship.startNode)
             val targetId = nodeId(relationship.endNode)
+            if (sourceId.isBlank() || targetId.isBlank()) {
+                return@forEach
+            }
+
             nodeById[sourceId] = relationship.startNode
             nodeById[targetId] = relationship.endNode
-            adjacency.getOrPut(sourceId) { linkedSetOf() }.add(targetId)
-            adjacency.getOrPut(targetId) { linkedSetOf() }.add(sourceId)
+            adjacency
+                .getOrPut(sourceId) { linkedMapOf() }
+                .merge(targetId, 1, Int::plus)
+            adjacency
+                .getOrPut(targetId) { linkedMapOf() }
+                .merge(sourceId, 1, Int::plus)
+        }
+        if (nodeById.isEmpty()) {
+            return emptyList()
         }
 
         val communities = mutableListOf<List<String>>()
         val visited = mutableSetOf<String>()
-        val sortedNodeIds = nodeById.keys.sorted()
-
-        sortedNodeIds.forEach { rootId ->
+        nodeById.keys.sorted().forEach { rootId ->
             if (!visited.add(rootId)) {
                 return@forEach
             }
@@ -37,11 +46,15 @@ class FastTreeComm {
             while (queue.isNotEmpty()) {
                 val current = queue.removeFirst()
                 members.add(current)
-                adjacency[current].orEmpty().sorted().forEach { neighbor ->
-                    if (visited.add(neighbor)) {
-                        queue.addLast(neighbor)
+                adjacency[current]
+                    .orEmpty()
+                    .keys
+                    .sorted()
+                    .forEach { neighbor ->
+                        if (visited.add(neighbor)) {
+                            queue.addLast(neighbor)
+                        }
                     }
-                }
             }
             communities.add(members.sorted())
         }
@@ -56,8 +69,9 @@ class FastTreeComm {
             val memberSet = members.toSet()
             val edgeCount =
                 relationships.count { relationship ->
-                    nodeId(relationship.startNode) in memberSet &&
-                        nodeId(relationship.endNode) in memberSet
+                    val sourceId = nodeId(relationship.startNode)
+                    val targetId = nodeId(relationship.endNode)
+                    sourceId in memberSet && targetId in memberSet
                 }
 
             mapOf(
@@ -65,45 +79,42 @@ class FastTreeComm {
                 "node_count" to members.size,
                 "edge_count" to edgeCount,
                 "nodes" to members,
-                "keywords" to extractKeywords(members),
+                "keywords" to extractRepresentativeMembers(members, adjacency),
             )
         }
     }
 
-    private fun extractKeywords(members: List<String>): List<String> {
-        val frequencies = mutableMapOf<String, Int>()
-        members.forEach { member ->
-            TOKEN_REGEX.findAll(member).forEach { match ->
-                val token = match.value.lowercase(Locale.ROOT)
-                if (token.length <= 2 || token in KEYWORD_STOPWORDS) {
-                    return@forEach
-                }
-                frequencies[token] = (frequencies[token] ?: 0) + 1
-            }
+    private fun extractRepresentativeMembers(
+        members: List<String>,
+        adjacency: Map<String, Map<String, Int>>,
+    ): List<String> {
+        if (members.isEmpty()) {
+            return emptyList()
         }
 
-        return frequencies.entries
-            .sortedWith(
-                compareByDescending<Map.Entry<String, Int>> { it.value }
-                    .thenBy { it.key },
+        val memberSet = members.toSet()
+        return members
+            .map { member ->
+                val degree =
+                    adjacency[member]
+                        .orEmpty()
+                        .filterKeys { neighbor -> neighbor in memberSet }
+                        .values
+                        .sum()
+                member to degree
+            }.sortedWith(
+                compareByDescending<Pair<String, Int>> { it.second }
+                    .thenBy { it.first.lowercase(Locale.ROOT) },
             ).take(MAX_KEYWORDS)
-            .map { entry -> entry.key }
+            .map { pair -> pair.first }
     }
 
-    private fun nodeId(node: GraphNode): String = node.properties["name"]?.takeIf { it.isNotBlank() } ?: node.label
+    private fun nodeId(node: GraphNode): String {
+        val fromName = node.properties["name"]?.toString()?.trim().orEmpty()
+        return fromName.ifBlank { node.label.trim() }
+    }
 
     companion object {
         private const val MAX_KEYWORDS = 5
-        private val TOKEN_REGEX = Regex("[A-Za-z0-9_]+")
-        private val KEYWORD_STOPWORDS =
-            setOf(
-                "and",
-                "for",
-                "from",
-                "that",
-                "the",
-                "this",
-                "with",
-            )
     }
 }

@@ -33,10 +33,7 @@ internal object NpzEmbeddingCache {
                 if (npyArray.shape.size != 1 || npyArray.shape[0] != expectedDimensions) {
                     return@forEach
                 }
-                val vector = npyArray.asFloatArray()
-                if (vector.size == expectedDimensions) {
-                    vectors[key] = vector
-                }
+                vectors[key] = npyArray.asFloatArray()
             }
         }
         return vectors

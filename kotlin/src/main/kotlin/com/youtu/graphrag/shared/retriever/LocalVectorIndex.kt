@@ -31,7 +31,7 @@ class HashTextEmbedder(
     private val modelName: String = "all-MiniLM-L6-v2",
 ) : TextEmbedder {
     override val modelTag: String = "hash:$modelName"
-    private val tokenRegex = Regex("[A-Za-z0-9_]{2,}")
+    private val tokenRegex = Regex("[\\p{L}\\p{N}_]{2,}")
 
     override fun embed(text: String): FloatArray {
         val vector = FloatArray(dimensions)

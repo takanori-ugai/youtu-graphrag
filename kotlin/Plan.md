@@ -29,15 +29,15 @@ CLI migration parity is prioritized on the critical path.
 ### A. API/WebSocket layer
 - Python source: `../backend.py`
 - Kotlin source: `src/main/kotlin/com/youtu/graphrag/server/api/Application.kt`
-- Status: routes are present and mostly aligned (`/api/upload`, `/api/construct-graph`, `/api/ask-question`, datasets/schema/reconstruct/graph, WS endpoint).
+- Status: route coverage and WS envelopes are parity-hardened with explicit payload builder helpers and contract tests (`ApiContractsTest`, `ApplicationWsParityTest`, `ApplicationPayloadContractsTest`).
 - Gap:
-  - `ask-question` payload/event detail parity is still partial (field-level and sequencing nuances).
-  - Contract lock is missing (no strict Python-vs-Kotlin fixture gate).
+  - Full route-level end-to-end fixture lock (including upload/schema/dataset lifecycle happy+error paths) is still incomplete.
+  - Frontend compatibility with unmodified Python frontend assets still needs explicit regression coverage.
 
 ### B. Constructor
 - Python source: `../models/constructor/kt_gen.py`
 - Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/constructor/KTBuilder.kt`
-- Status: extraction-parity flow is implemented in Kotlin (LLM payload parsing for `attributes`/`triples`/`entity_types`, agent-mode schema evolution, and token chunking via `jtokkit`).
+- Status: extraction-parity flow is implemented in Kotlin (LLM payload parsing for `attributes`/`triples`/`entity_types`, agent-mode schema evolution, token chunking via `jtokkit`) and TreeComm artifacts are now emitted into graph output via constructor path.
 - Gap:
   - Cross-runtime golden fixtures (Python vs Kotlin constructor outputs on shared corpora) are not fully locked yet.
   - Remaining drift risk is mainly in prompt/output nondeterminism boundaries rather than missing constructor capability.
@@ -45,24 +45,24 @@ CLI migration parity is prioritized on the critical path.
 ### C. Retriever
 - Python source: `../models/retriever/enhanced_kt_retriever.py`, `../models/retriever/faiss_filter.py`
 - Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/retriever/KTRetriever.kt`
-- Status: Kotlin has lexical + vector hybrid retrieval, type filters, recall expansion, chunk merging, ANN via Lucene fallback, and retriever-time NLP abstraction (OpenNLP provider with deterministic regex fallback).
+- Status: Kotlin has lexical + vector hybrid retrieval, type filters, recall expansion, chunk merging, ANN via Lucene fallback, retriever-time NLP abstraction (OpenNLP provider with deterministic regex fallback), and expanded parity fixture coverage for output shape/ranking strategy metadata.
 - Gap:
   - Python retriever still has richer strategy internals; Kotlin parity is partial.
-  - Full scoring/path behavior parity still needs expanded Python-vs-Kotlin fixture coverage.
+  - Cross-runtime fixture breadth is still limited and needs larger dataset/sample coverage.
 
 ### D. Decomposer + IRCoT
 - Python source: `../models/retriever/agentic_decomposer.py`, `../main.py`, `../backend.py`
 - Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/decomposer/GraphQ.kt`, `src/main/kotlin/com/youtu/graphrag/server/api/QuestionAnsweringService.kt`
-- Status: decomposition + iterative IRCoT loop parity hardening is in place (marker parsing, repeated-query termination normalization, edge-case tests).
+- Status: decomposition + iterative IRCoT loop parity hardening is in place (marker parsing, repeated-query termination normalization, edge-case tests), and backend/main IRCoT prompt variant source selection is now explicit and deterministic in Kotlin runtime.
 - Gap:
-  - Prompt routing/templates are not yet parity-locked (Python uses mixed key names and inline IRCoT prompt variants; Kotlin uses JSON `prompts.retrieval.ircot` plus alias routing).
-  - End-to-end fixture lock for backend/main variant selection still pending.
+  - Full rendered prompt snapshot matrix across datasets/modes is still incomplete.
+  - End-to-end Python-vs-Kotlin fixture lock for variant text equivalence is still pending.
 
 ### E. TreeComm
 - Python source: `utils/tree_comm` usage through constructor path
 - Kotlin source: `src/main/kotlin/com/youtu/graphrag/shared/treecomm/FastTreeComm.kt`
-- Status: Kotlin implements deterministic connected-component community detection with community metadata and keyword extraction outputs.
-- Gap: full algorithm-level parity with Python TreeComm internals is still pending beyond current schema-compatible outputs.
+- Status: Kotlin TreeComm is integrated into constructor output and emits Python-compatible artifact schema for community/keyword pathing (`member_of`, `represented_by`, `keyword_of`, `kw_filter_by`) with `community.members` list preserved in graph JSON.
+- Gap: full algorithm-level parity with Python TreeComm internals remains pending beyond current schema-compatible deterministic output.
 
 ### F. CLI
 - Python source: `../main.py`
@@ -78,8 +78,8 @@ CLI migration parity is prioritized on the critical path.
   - External docs/examples still need consistency checks to ensure no stale YAML references remain.
 
 ### H. Validation
-- Kotlin has unit/integration tests for major modules.
-- Gap: no hard Python-vs-Kotlin golden fixture suite enforcing parity across constructor/retrieval/IRCoT outputs.
+- Kotlin now has expanded parity-focused tests across constructor/treecomm/retriever/IRCoT/API/WS contracts.
+- Gap: unified Python-vs-Kotlin golden fixture automation is still not fully implemented across all target datasets and flows.
 
 ---
 
@@ -111,7 +111,7 @@ Exit criteria:
 - Retriever tests pass with NPZ-only caching.
 
 ## WS-1: Retrieval parity against Python fixtures (High Priority)
-Status: In progress
+Status: In progress (expanded on 2026-05-13)
 
 Tasks:
 - Build deterministic fixture harness comparing Python and Kotlin retrieval outputs on same graph/chunk inputs.
@@ -130,7 +130,11 @@ Progress update (2026-05-13):
   - `chunk_contents`
   - `chunk_retrieval_results` (prefix-locked format)
   - `retrieval_strategy`
-- Added initial fixture snapshot covering relation-type filtering behavior as baseline for further Python fixture expansion.
+- Added fixture-level config override support and parity assertions for retrieval metadata (`top_k`, `recall_paths`).
+- Expanded fixture snapshots to cover:
+  - relation-type filtering behavior,
+  - recall-path expansion ordering behavior,
+  - lexical-only retrieval mode (`enable_reranking=false`).
 
 Exit criteria:
 - Fixture tests fail on unexpected drift and pass on known-tolerated variance.
@@ -192,7 +196,7 @@ Exit criteria:
 - Constructor fixture output compatibility passes for demo corpus snapshots.
 
 ## WS-9: Retriever NLP parity (spaCy replacement) (High Priority)
-Status: In progress
+Status: In progress (fixture pass expanded on 2026-05-13)
 
 Background:
 - Python retriever uses spaCy (`en_core_web_lg`) for:
@@ -202,13 +206,9 @@ Background:
 - Remaining gap is fixture-level parity lock versus Python outputs (enhanced query and keyword/entity sets).
 
 Remaining tasks:
-- Expand parity fixtures comparing Python vs Kotlin outputs for:
-  - query enhancement
-  - extracted keyword sets
-  - representative direct/multi-hop questions across target datasets.
-- Calibrate normalization/tolerance rules for entity and key-term formatting drift.
+- Expand fixture corpus size (more representative direct/multi-hop questions per target dataset).
 - Decide and document legacy-key policy for `nlp.spacy_model` in JSON config (ignore vs remove) without affecting runtime behavior.
-- Add regression gates ensuring OpenNLP and regex-fallback paths remain deterministic.
+- Add CI gating path dedicated to NLP parity fixtures.
 
 Progress update (2026-05-13):
 - Added `QueryNlp` abstraction with pluggable providers and deterministic output shape (`entities`, `keyTerms`, `keywords`).
@@ -223,6 +223,7 @@ Progress update (2026-05-13):
   - keyword extraction behavior with stopword filtering,
   - enhancement toggle behavior,
   - OpenNLP->regex fallback behavior.
+- Added dedicated NLP parity fixture suite (`RetrieverNlpFixtureParityTest`) with documented overlap tolerances against Python baselines (entities/keywords) and deterministic fallback assertions.
 
 Exit criteria:
 - Kotlin retriever NLP output (enhanced query + keywords) matches Python fixture baselines within documented tolerances.
@@ -230,11 +231,11 @@ Exit criteria:
 - Fallback behavior is deterministic and covered by tests.
 
 ## WS-8: Prompt Routing/Template Parity (High Priority)
-Status: In progress
+Status: In progress (IRCoT source policy locked on 2026-05-13)
 
 Prompt audit findings (2026-05-13):
 - Python decomposition/retrieval key variants (`anony_chs`/`novel`, `novel_chs`/`novel`) are now alias-routed in Kotlin, but full snapshot lock is still pending.
-- Python IRCoT prompt text is inline in `main.py` and `backend.py` (two variants); Kotlin currently resolves from JSON `prompts.retrieval.ircot`.
+- Python IRCoT prompt text is inline in `main.py` and `backend.py` (two variants); Kotlin now supports deterministic source selection (`backend` vs `main`) with explicit prompt key routing and shared fallback.
 - Constructor prompt-driven extraction is implemented in Kotlin; cross-runtime rendered prompt snapshots are not fully locked yet.
 
 Tasks:
@@ -252,6 +253,12 @@ Progress update (2026-05-13):
 - Added decomposition prompt alias compatibility for Python key variants (`decomposition.anony_chs` <-> `decomposition.novel`) with deterministic candidate resolution.
 - Added retrieval prompt alias compatibility for Chinese novel key variants (`retrieval.novel_chs` <-> `retrieval.novel`) with deterministic candidate resolution.
 - Added tests covering alias routing and rendered prompt substitution paths for decomposition/retrieval prompt generation.
+- Added IRCoT prompt source model in Kotlin (`backend` vs `main`) with source-specific template key support:
+  - `prompts.retrieval.ircot_backend`
+  - `prompts.retrieval.ircot_main`
+  - fallback to shared `prompts.retrieval.ircot`.
+- Wired API runtime to backend-style IRCoT prompt source and CLI runtime to main-style source for parity-aligned behavior.
+- Added retriever tests for source-specific key routing and shared-fallback behavior.
 
 Exit criteria:
 - Rendered prompt snapshots match Python baselines for target datasets/modes.
@@ -259,7 +266,7 @@ Exit criteria:
 - IRCoT prompt variant selection is deterministic and fixture-tested.
 
 ## WS-4: API/WS contract lock (Medium Priority)
-Status: In progress
+Status: In progress (hardened on 2026-05-13)
 
 Tasks:
 - Add contract tests for endpoint payload shapes and WS event series.
@@ -275,12 +282,17 @@ Progress update (2026-05-13):
   - `QuestionAnsweringServiceTest`
   - `ApplicationWsParityTest`
   - `ApiContractsTest`
+- Added explicit WS payload builder helpers in `Application.kt` and test coverage for strict envelope fields:
+  - `progressPayload`
+  - `stageEventPayload`
+  - `qaUpdatePayload`
+- Added QA stage monotonic-sequence parity checks in `ApplicationWsParityTest`.
 
 Exit criteria:
 - Contract tests cover all public routes and core WS events.
 
 ## WS-5: TreeComm parity (High Priority)
-Status: In progress
+Status: Completed (2026-05-13)
 
 Tasks:
 - Implement actual community detection flow (replace stub).
@@ -293,11 +305,18 @@ Progress update (2026-05-13):
   - `node_count`
   - `edge_count`
   - `nodes`
-  - `keywords` (frequency-ranked token extraction)
+  - `keywords` (representative member-based extraction)
+- Integrated TreeComm output into constructor graph generation path (`KTBuilder`) so graph artifacts now include community and keyword relations:
+  - `member_of`
+  - `represented_by`
+  - `kw_filter_by`
+  - `keyword_of`
+- Updated graph model property typing to preserve list-valued fields (e.g., `community.properties.members`) in serialized graph output.
 - Added/updated `FastTreeCommTest` coverage for:
   - deterministic community metadata on connected graphs,
   - disconnected component separation,
   - keyword extraction behavior.
+- Added constructor integration test coverage ensuring TreeComm artifacts are present in generated graph outputs.
 
 Exit criteria:
 - TreeComm outputs satisfy schema and fixture-level parity checks.
@@ -342,12 +361,21 @@ Exit criteria:
 
 ## 5) Immediate Execution Order
 
-1. Finish WS-5 TreeComm parity against Python artifact expectations.
-2. Execute WS-8 prompt routing/template parity lock (including IRCoT variant source-of-truth).
-3. Lock WS-1 retrieval fixtures against Python baselines (shape + ranking + strategy metadata).
-4. Complete WS-9 retriever NLP parity fixture pass (OpenNLP/regex outputs vs Python spaCy-era baselines with documented tolerances).
-5. Finalize WS-4 API/WS contract locks with strict endpoint + WS event-sequence coverage.
-6. Run and gate the full parity suite (constructor/retriever/IRCoT/API) before closing remaining workstreams.
+Completed on 2026-05-13:
+1. WS-5 TreeComm parity execution (constructor-integrated community/keyword artifacts).
+2. WS-8 prompt routing execution for IRCoT source-of-truth lock (`backend` vs `main`).
+3. WS-1 retrieval fixture lock expansion (shape + ranking + strategy metadata).
+4. WS-9 retriever NLP fixture pass expansion (regex/OpenNLP-fallback with tolerance checks).
+5. WS-4 API/WS contract hardening (payload envelopes + stage-sequence checks).
+6. Parity-focused suite gate run across constructor/retriever/IRCoT/API/WS tests.
+
+Next immediate order:
+1. Build/expand Python-vs-Kotlin golden fixture automation for constructor/retrieval/IRCoT on shared corpora.
+2. Complete WS-8 rendered prompt snapshot matrix across datasets/modes (`construction`, `decomposition`, `retrieval`, `retrieval.ircot_*`).
+3. Expand WS-1 fixture breadth for larger multi-hop and community-aware retrieval scenarios.
+4. Finalize WS-9 legacy key policy for `nlp.spacy_model` and lock it with config/runtime tests.
+5. Complete WS-4 route-level end-to-end contract coverage (including upload/schema/dataset lifecycle flows).
+6. Promote parity-focused gate into CI as required merge/release checks.
 
 ---
 

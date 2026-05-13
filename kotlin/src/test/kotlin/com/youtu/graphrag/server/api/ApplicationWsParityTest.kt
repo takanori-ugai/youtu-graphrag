@@ -3,6 +3,7 @@ package com.youtu.graphrag.server.api
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ApplicationWsParityTest {
     @Test
@@ -64,5 +65,24 @@ class ApplicationWsParityTest {
     fun `qa stage mapping returns null when unsupported or malformed`() {
         assertNull(qaProgressUpdateForStage(QaStageUpdate(stage = "start")))
         assertNull(qaProgressUpdateForStage(QaStageUpdate(stage = "ircot")))
+    }
+
+    @Test
+    fun `qa stage sequence keeps python-style monotonic progress cadence`() {
+        val updates =
+            listOf(
+                QaStageUpdate(stage = "decompose"),
+                QaStageUpdate(stage = "sub_question"),
+                QaStageUpdate(stage = "ircot_start"),
+                QaStageUpdate(stage = "ircot", payload = mapOf("step" to 1)),
+                QaStageUpdate(stage = "ircot", payload = mapOf("step" to 2)),
+                QaStageUpdate(stage = "ircot", payload = mapOf("step" to 3)),
+            ).mapNotNull { update -> qaProgressUpdateForStage(update) }
+
+        assertEquals(
+            listOf(50, 65, 75, 80, 85, 90),
+            updates.map { it.first },
+        )
+        assertTrue(updates.zipWithNext().all { (left, right) -> right.first >= left.first })
     }
 }

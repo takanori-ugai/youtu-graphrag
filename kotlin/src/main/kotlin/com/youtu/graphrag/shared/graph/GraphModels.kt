@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 
 data class GraphNode(
     val label: String,
-    val properties: Map<String, String>,
+    val properties: Map<String, Any?>,
 )
 
 data class GraphRelationship(

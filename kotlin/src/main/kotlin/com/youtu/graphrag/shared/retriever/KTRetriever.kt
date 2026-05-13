@@ -68,6 +68,11 @@ private data class RetrievalChunk(
     val text: String,
 )
 
+enum class IrcotPromptSource {
+    BACKEND,
+    MAIN,
+}
+
 private data class ChunkRanking(
     val chunkId: String,
     val score: Double,
@@ -384,27 +389,102 @@ class KTRetriever private constructor(
         context: String,
         previousThoughts: String,
         step: Int,
-    ): String =
-        runCatching {
-            config.getPromptFormatted(
-                category = "retrieval",
-                promptType = "ircot",
-                variables =
-                    mapOf(
-                        "current_query" to currentQuery,
-                        "context" to context,
-                        "previous_thoughts" to previousThoughts,
-                        "step" to step,
-                    ),
+        originalQuestion: String = currentQuery,
+        promptSource: IrcotPromptSource = IrcotPromptSource.BACKEND,
+    ): String {
+        val promptCandidates =
+            when (promptSource) {
+                IrcotPromptSource.BACKEND -> listOf("ircot_backend", "ircot")
+                IrcotPromptSource.MAIN -> listOf("ircot_main", "ircot")
+            }
+        val variables =
+            mapOf(
+                "current_query" to currentQuery,
+                "current_iteration_query" to currentQuery,
+                "original_question" to originalQuestion,
+                "context" to context,
+                "previous_thoughts" to previousThoughts,
+                "step" to step,
             )
-        }.getOrElse {
-            """
-            Current Question: $currentQuery
-            Available Knowledge Context:
-            $context
-            Previous Thoughts: $previousThoughts
-            Step $step
-            """.trimIndent()
+
+        promptCandidates.forEach { promptType ->
+            val template = config.prompts["retrieval"]?.get(promptType) ?: return@forEach
+            val rendered =
+                runCatching {
+                    config.getPromptFormatted(
+                        category = "retrieval",
+                        promptType = promptType,
+                        variables = variables,
+                    )
+                }.getOrElse {
+                    template
+                        .replace("{current_query}", currentQuery)
+                        .replace("{current_iteration_query}", currentQuery)
+                        .replace("{original_question}", originalQuestion)
+                        .replace("{context}", context)
+                        .replace("{previous_thoughts}", previousThoughts)
+                        .replace("{step}", step.toString())
+                }
+            return rendered
+        }
+
+        return inlineFallbackIrcotPrompt(
+            currentQuery = currentQuery,
+            originalQuestion = originalQuestion,
+            context = context,
+            previousThoughts = previousThoughts,
+            step = step,
+            promptSource = promptSource,
+        )
+    }
+
+    private fun inlineFallbackIrcotPrompt(
+        currentQuery: String,
+        originalQuestion: String,
+        context: String,
+        previousThoughts: String,
+        step: Int,
+        promptSource: IrcotPromptSource,
+    ): String =
+        when (promptSource) {
+            IrcotPromptSource.MAIN ->
+                """
+                You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
+
+                Current Question: $currentQuery
+
+                Available Knowledge Context:
+                $context
+
+                Previous Thoughts: $previousThoughts
+
+                Step $step: Please think step by step about what additional information you need to answer the question completely and accurately.
+
+                Instructions:
+                1. Analyze the current knowledge context and the question
+                2. Consider the initial analysis from noagent mode (if available in previous thoughts)
+                3. Think about what information might be missing or unclear
+                4. If you have enough information to answer, in the end of your response, write "So the answer is:" followed by your final answer
+                5. If you need more information, in the end of your response, write a specific query begin with "The new query is:" to retrieve additional relevant information
+                6. Be specific and focused in your reasoning
+                7. Build upon the initial analysis to provide deeper insights
+
+                Your reasoning:
+                """.trimIndent()
+
+            IrcotPromptSource.BACKEND ->
+                """
+                You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
+                Current Question: $originalQuestion
+                Current Iteration Query: $currentQuery
+                Knowledge Context:
+                $context
+                Previous Thoughts: $previousThoughts
+                Instructions:
+                1. If enough info answer with: So the answer is: <answer>
+                2. Else propose new query with: The new query is: <query>
+                Your reasoning:
+                """.trimIndent()
         }
 
     private fun filterTriplesByInvolvedTypes(
@@ -621,7 +701,7 @@ class KTRetriever private constructor(
             .toSet()
 
     private fun tokenize(input: String): Set<String> {
-        val tokenRegex = Regex("[A-Za-z0-9_]{2,}")
+        val tokenRegex = Regex("[\\p{L}\\p{N}_]{2,}")
         return tokenRegex.findAll(input.lowercase()).map { it.value }.toSet()
     }
 
@@ -694,10 +774,12 @@ private class IndexBuilder(
         return relationships.map { relationship ->
             val source =
                 relationship.startNode.properties["name"]
+                    ?.toString()
                     ?.takeIf { value -> value.isNotBlank() }
                     ?: relationship.startNode.label
             val target =
                 relationship.endNode.properties["name"]
+                    ?.toString()
                     ?.takeIf { value -> value.isNotBlank() }
                     ?: relationship.endNode.label
             TripleRecord(
@@ -706,8 +788,8 @@ private class IndexBuilder(
                 target = target,
                 sourceLabel = relationship.startNode.label,
                 targetLabel = relationship.endNode.label,
-                sourceProperties = relationship.startNode.properties,
-                targetProperties = relationship.endNode.properties,
+                sourceProperties = relationship.startNode.properties.toStringValueMap(),
+                targetProperties = relationship.endNode.properties.toStringValueMap(),
             )
         }
     }
@@ -968,3 +1050,13 @@ private class IndexBuilder(
         return if (candidate.isAbsolute) candidate else rootDir.resolve(candidate)
     }
 }
+
+private fun Map<String, Any?>.toStringValueMap(): Map<String, String> =
+    entries.associate { (key, value) ->
+        key to
+            when (value) {
+                is List<*> -> value.joinToString(", ") { item -> item?.toString().orEmpty() }
+                null -> ""
+                else -> value.toString()
+            }
+    }

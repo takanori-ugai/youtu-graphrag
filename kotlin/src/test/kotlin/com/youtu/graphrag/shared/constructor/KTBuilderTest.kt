@@ -299,6 +299,76 @@ class KTBuilderTest {
         assertTrue(observedPrompt.startsWith("NOVEL_ENG_AGENT::"))
     }
 
+    @Test
+    fun `buildKnowledgeGraph emits treecomm community and keyword artifacts`() {
+        val root = Files.createTempDirectory("youtu-graphrag-ktbuilder-treecomm-test")
+        val schemaPath = root.resolve("schemas/demo.json").also { it.parent.createDirectories() }
+        val corpusPath = root.resolve("data/treecomm_corpus.json").also { it.parent.createDirectories() }
+
+        schemaPath.writeText("""{"Nodes":["person","organization","location"],"Relations":["works_at","located_in"],"Attributes":["name"]}""")
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+            corpusPath.toFile(),
+            listOf(
+                mapOf(
+                    "title" to "Doc Tree",
+                    "text" to "Alice works at Acme in Tokyo.",
+                ),
+            ),
+        )
+
+        val config = createTestConfig(root = root, mode = "noagent")
+        val llmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String =
+                    """
+                    {
+                      "attributes": {},
+                      "triples": [
+                        ["Alice", "works_at", "Acme"],
+                        ["Acme", "located_in", "Tokyo"]
+                      ],
+                      "entity_types": {
+                        "Alice": "person",
+                        "Acme": "organization",
+                        "Tokyo": "location"
+                      }
+                    }
+                    """.trimIndent()
+            }
+
+        val builder =
+            KTBuilder(
+                datasetName = "treecomm_ds",
+                schemaPath = schemaPath.pathString,
+                mode = "noagent",
+                config = config,
+                rootDir = root,
+                llmClient = llmClient,
+            )
+
+        val relationships = builder.buildKnowledgeGraph(corpusPath.pathString)
+
+        assertTrue(relationships.any { relationship -> relationship.relation == "member_of" })
+        assertTrue(relationships.any { relationship -> relationship.relation == "represented_by" })
+        assertTrue(relationships.any { relationship -> relationship.relation == "kw_filter_by" })
+        assertTrue(relationships.any { relationship -> relationship.relation == "keyword_of" })
+
+        val communityNode =
+            relationships
+                .firstOrNull { relationship -> relationship.relation == "member_of" }
+                ?.endNode
+        assertEquals("community", communityNode?.label)
+        val members = communityNode?.properties?.get("members") as? List<*>
+        assertTrue(members?.contains("Alice") == true)
+        assertTrue(members?.contains("Acme") == true)
+
+        val graphPath = root.resolve("output/graphs/treecomm_ds_new.json")
+        assertTrue(graphPath.exists())
+        val graphText = graphPath.readText()
+        assertTrue("\"member_of\"" in graphText)
+        assertTrue("\"keyword_of\"" in graphText)
+    }
+
     private fun createTestConfig(
         root: Path,
         mode: String,

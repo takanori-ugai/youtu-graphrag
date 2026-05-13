@@ -84,7 +84,7 @@ class RegexQueryNlp(
 
     companion object {
         private const val MAX_KEY_TERMS = 5
-        private val TOKEN_REGEX = Regex("[A-Za-z0-9_']+")
+        private val TOKEN_REGEX = Regex("[\\p{L}\\p{N}_']+")
         private val TITLE_CASE_ENTITY_REGEX = Regex("\\b[A-Z][a-zA-Z0-9_]*(?:\\s+[A-Z][a-zA-Z0-9_]*)*\\b")
         private val ACRONYM_ENTITY_REGEX = Regex("\\b[A-Z]{2,}(?:\\s+[A-Z]{2,})*\\b")
         private val IGNORED_ENTITY_WORDS =
