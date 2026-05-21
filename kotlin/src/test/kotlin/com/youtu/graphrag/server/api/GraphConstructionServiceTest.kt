@@ -48,11 +48,10 @@ class GraphConstructionServiceTest {
 
         val graphJson = mapper.readTree(graphPath.toFile())
         assertTrue(graphJson.isArray)
-        if (graphJson.size() > 0) {
-            val firstRelation = graphJson[0]
-            assertTrue(firstRelation.has("startNode"))
-            assertTrue(firstRelation.has("relation"))
-            assertTrue(firstRelation.has("endNode"))
+        graphJson.forEach { relation ->
+            assertTrue(relation.has("startNode"), "Missing startNode")
+            assertTrue(relation.has("relation"), "Missing relation")
+            assertTrue(relation.has("endNode"), "Missing endNode")
         }
         assertNotNull(result.graphData["nodes"])
         assertNotNull(result.graphData["links"])

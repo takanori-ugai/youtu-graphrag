@@ -123,13 +123,13 @@ class RetrievalFixtureParityTest {
 
     private fun loadFixtures(): List<RetrievalParityFixture> {
         val resourcePath = "fixtures/retrieval/retrieval_parity_fixtures.json"
-        val stream = javaClass.classLoader.getResourceAsStream(resourcePath)
-        if (stream != null) {
-            return stream.use { input ->
-                mapper.readValue(input, object : TypeReference<List<RetrievalParityFixture>>() {})
+        val stream =
+            requireNotNull(javaClass.classLoader.getResourceAsStream(resourcePath)) {
+                "Fixture resource not found: $resourcePath"
             }
+        return stream.use { input ->
+            mapper.readValue(input, object : TypeReference<List<RetrievalParityFixture>>() {})
         }
-        return fallbackFixtures()
     }
 
     private fun createTestConfig(root: Path): ConfigManager {
@@ -173,64 +173,6 @@ class RetrievalFixtureParityTest {
     }
 
     private fun stripScoreSuffix(triple: String): String = triple.replace(SCORE_SUFFIX_REGEX, "")
-
-    private fun fallbackFixtures(): List<RetrievalParityFixture> =
-        listOf(
-            RetrievalParityFixture(
-                name = "default_single_hop",
-                question = "Who leads Project Alpha?",
-                involvedTypes = emptyMap(),
-                configOverrides =
-                    mapOf(
-                        "retrieval" to
-                            mapOf(
-                                "enable_reranking" to false,
-                                "enable_query_enhancement" to false,
-                            ),
-                    ),
-                topK = 1,
-                recallPaths = 1,
-                graph =
-                    listOf(
-                        GraphRelationship(
-                            startNode =
-                                com.youtu.graphrag.shared.graph.GraphNode(
-                                    label = "entity",
-                                    properties =
-                                        mapOf(
-                                            "name" to "Project Alpha",
-                                            "chunk id" to "c1",
-                                        ),
-                                ),
-                            relation = "led_by",
-                            endNode =
-                                com.youtu.graphrag.shared.graph.GraphNode(
-                                    label = "entity",
-                                    properties =
-                                        mapOf(
-                                            "name" to "Alice",
-                                            "chunk id" to "c1",
-                                        ),
-                                ),
-                        ),
-                    ),
-                chunks =
-                    listOf(
-                        RetrievalChunkFixture(
-                            id = "c1",
-                            text = "Project Alpha is led by Alice.",
-                        ),
-                    ),
-                expected =
-                    RetrievalExpectedFixture(
-                        triples = listOf("(Project Alpha, led_by, Alice)"),
-                        chunkIds = listOf("c1"),
-                        chunkContents = listOf("Project Alpha is led by Alice."),
-                        chunkRetrievalPrefixes = listOf("[Chunk c1] Project Alpha is led by Alice."),
-                        retrievalStrategyPrefix = "",
-                    ),
-            ),
-        )
 
     companion object {
         private val SCORE_SUFFIX_REGEX = Regex("""\s+\[score: [^\]]+]$""")

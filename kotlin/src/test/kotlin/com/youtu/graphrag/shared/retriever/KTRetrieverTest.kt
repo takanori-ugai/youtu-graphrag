@@ -223,9 +223,9 @@ class KTRetrieverTest {
 
         assertTrue(retrievalTime >= 0.0)
         assertTrue(triples.isEmpty() || triples.all { triple -> triple.isNotBlank() })
-        assertTrue(chunkIds.isNotEmpty())
         assertEquals(chunkIds.size, chunkContents.size)
-        assertTrue(chunkRetrievalResults.isNotEmpty())
+        assertEquals(chunkIds.size, chunkRetrievalResults.size)
+        assertTrue(chunkRetrievalResults.all { line -> line.startsWith("[Chunk ") })
         assertEquals(setOf("triples", "chunk_ids", "chunk_contents", "chunk_retrieval_results"), results.keys)
     }
 
