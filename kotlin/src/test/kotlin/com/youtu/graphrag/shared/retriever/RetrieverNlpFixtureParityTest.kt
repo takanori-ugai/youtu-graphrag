@@ -203,5 +203,4 @@ class RetrieverNlpFixtureParityTest {
     }
 
     private fun percent(value: Double): String = "${(value * 100.0).roundToInt()}%"
-
 }
