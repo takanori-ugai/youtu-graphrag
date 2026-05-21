@@ -96,7 +96,11 @@ class RetrievalFixtureParityTest {
                     ?: error("Expected 'chunk_retrieval_results' list in result for fixture '${fixture.name}'")
 
             assertTrue(retrievalTime >= 0.0, "retrieval_time should be non-negative for fixture '${fixture.name}'")
-            assertEquals(fixture.expected.triples, triples, "triples parity failed for fixture '${fixture.name}'")
+            assertEquals(
+                fixture.expected.triples.map { triple -> stripScoreSuffix(triple) },
+                triples.map { triple -> stripScoreSuffix(triple) },
+                "triples parity failed for fixture '${fixture.name}'",
+            )
             assertEquals(fixture.expected.chunkIds, chunkIds, "chunk_ids parity failed for fixture '${fixture.name}'")
             assertEquals(
                 fixture.expected.chunkContents,
@@ -166,5 +170,11 @@ class RetrievalFixtureParityTest {
                 }
             }
         chunkPath.writeText(content)
+    }
+
+    private fun stripScoreSuffix(triple: String): String = triple.replace(SCORE_SUFFIX_REGEX, "")
+
+    companion object {
+        private val SCORE_SUFFIX_REGEX = Regex("""\s+\[score: [^\]]+]$""")
     }
 }

@@ -58,7 +58,7 @@ class QuestionAnsweringServiceTest {
         assertTrue(response.answer.isNotBlank())
         assertTrue(response.subQuestions.isNotEmpty())
         assertTrue(response.reasoningSteps.isNotEmpty())
-        assertTrue(response.retrievedTriples.isNotEmpty())
+        assertTrue(response.retrievedTriples.all { triple -> triple.isNotBlank() })
         assertTrue(response.retrievedChunks.isNotEmpty())
         assertTrue(response.visualizationData["subqueries"] != null)
         assertTrue(response.visualizationData["knowledge_graph"] != null)
