@@ -100,8 +100,8 @@ dependencies {
     implementation("org.apache.lucene:lucene-core:10.4.0")
     implementation("org.apache.lucene:lucene-analysis-common:10.4.0")
     // Keep Hadoop before parquet-floor on classpath: parquet-floor bundles a stub FSDataInputStream.
-    implementation("org.apache.hadoop:hadoop-client-api:3.4.1")
-    runtimeOnly("org.apache.hadoop:hadoop-client-runtime:3.4.1")
+    implementation("org.apache.hadoop:hadoop-client-api:3.5.0")
+    runtimeOnly("org.apache.hadoop:hadoop-client-runtime:3.5.0")
     implementation("blue.strategic.parquet:parquet-floor:1.51")
     implementation("info.picocli:picocli:4.7.6")
     implementation("nl.cwts:networkanalysis:$networkAnalysisVersion")
