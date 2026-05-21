@@ -1,0 +1,55 @@
+[
+  {
+    "name": "default_single_hop",
+    "question": "Who leads Project Alpha?",
+    "involved_types": {},
+    "config_overrides": {
+      "retrieval": {
+        "enable_reranking": false,
+        "enable_query_enhancement": false
+      }
+    },
+    "top_k": 1,
+    "recall_paths": 1,
+    "graph": [
+      {
+        "start_node": {
+          "label": "entity",
+          "properties": {
+            "name": "Project Alpha",
+            "chunk id": "c1"
+          }
+        },
+        "relation": "led_by",
+        "end_node": {
+          "label": "entity",
+          "properties": {
+            "name": "Alice",
+            "chunk id": "c1"
+          }
+        }
+      }
+    ],
+    "chunks": [
+      {
+        "id": "c1",
+        "text": "Project Alpha is led by Alice."
+      }
+    ],
+    "expected": {
+      "triples": [
+        "(Project Alpha, led_by, Alice)"
+      ],
+      "chunk_ids": [
+        "c1"
+      ],
+      "chunk_contents": [
+        "Project Alpha is led by Alice."
+      ],
+      "chunk_retrieval_prefixes": [
+        "[Chunk c1] Project Alpha is led by Alice."
+      ],
+      "retrieval_strategy_prefix": ""
+    }
+  }
+]
