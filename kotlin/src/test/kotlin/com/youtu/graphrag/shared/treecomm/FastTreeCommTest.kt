@@ -5,6 +5,7 @@ import com.youtu.graphrag.shared.graph.GraphRelationship
 import com.youtu.graphrag.shared.llm.LlmClient
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class FastTreeCommTest {
@@ -122,5 +123,41 @@ class FastTreeCommTest {
         val summary = communities.first()["summary"]?.toString().orEmpty()
         assertTrue(summary.isNotBlank())
         assertTrue(summary.split(Regex("\\s+")).size <= 16)
+    }
+
+    @Test
+    fun `treeComm options reject invalid ranges`() {
+        assertFailsWith<IllegalArgumentException> { TreeCommOptions(structWeight = -0.1) }
+        assertFailsWith<IllegalArgumentException> { TreeCommOptions(mergeThreshold = 1.1) }
+        assertFailsWith<IllegalArgumentException> { TreeCommOptions(maxTotalCommunities = 0) }
+        assertFailsWith<IllegalArgumentException> { TreeCommOptions(maxIterations = -1) }
+        assertFailsWith<IllegalArgumentException> { TreeCommOptions(summaryMaxWords = 0) }
+    }
+
+    @Test
+    fun `community cap does not drop disconnected components in fast mode`() {
+        val nodeA = GraphNode("entity", mapOf("name" to "A"))
+        val nodeB = GraphNode("entity", mapOf("name" to "B"))
+        val nodeC = GraphNode("entity", mapOf("name" to "C"))
+        val nodeD = GraphNode("entity", mapOf("name" to "D"))
+
+        val relationships =
+            listOf(
+                GraphRelationship(nodeA, "links_to", nodeB),
+                GraphRelationship(nodeC, "links_to", nodeD),
+            )
+
+        val communities =
+            FastTreeComm().detectCommunities(
+                relationships = relationships,
+                options = TreeCommOptions(enableFastMode = true, maxTotalCommunities = 1),
+            )
+
+        assertEquals(2, communities.size)
+        val members =
+            communities
+                .flatMap { community -> (community["nodes"] as? List<*>)?.mapNotNull { node -> node?.toString() }.orEmpty() }
+                .toSet()
+        assertEquals(setOf("A", "B", "C", "D"), members)
     }
 }

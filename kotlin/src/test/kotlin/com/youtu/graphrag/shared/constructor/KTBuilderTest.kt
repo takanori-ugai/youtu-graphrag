@@ -343,6 +343,12 @@ class KTBuilderTest {
                             ),
                     ),
             )
+        assertEquals(false, config.treeComm.enableFastMode)
+        assertEquals(2, config.treeComm.maxTotalCommunities)
+        assertEquals(true, config.treeComm.enableSummary)
+        assertEquals(0.4, config.treeComm.mergeThreshold)
+        assertEquals(6, config.treeComm.maxIterations)
+        assertEquals(20, config.treeComm.summaryMaxWords)
         val llmClient =
             object : LlmClient {
                 override fun complete(prompt: String): String {
@@ -388,7 +394,12 @@ class KTBuilderTest {
                 .firstOrNull { relationship -> relationship.relation == "member_of" }
                 ?.endNode
         assertEquals("community", communityNode?.label)
-        val description = communityNode?.properties?.get("description")?.toString().orEmpty()
+        val description =
+            communityNode
+                ?.properties
+                ?.get("description")
+                ?.toString()
+                .orEmpty()
         assertTrue(description.startsWith("Community centered on"))
         val members = communityNode?.properties?.get("members") as? List<*>
         assertTrue(members != null)

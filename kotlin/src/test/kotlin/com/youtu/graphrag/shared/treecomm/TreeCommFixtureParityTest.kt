@@ -90,7 +90,7 @@ class TreeCommFixtureParityTest {
                     TreeCommOptionsFixture(
                         enableFastMode = false,
                         structWeight = 0.3,
-                        mergeThreshold = 0.4,
+                        mergeThreshold = 0.0,
                         maxIterations = 6,
                         maxTotalCommunities = 2,
                     ),

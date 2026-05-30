@@ -30,7 +30,7 @@ class PromptSnapshotMatrixTest {
 
         datasets.forEach { dataset ->
             modes.forEach { mode ->
-                val root = Files.createTempDirectory("youtu-graphrag-prompt-matrix-${dataset}-${mode}")
+                val root = Files.createTempDirectory("youtu-graphrag-prompt-matrix-$dataset-$mode")
                 val env = createFixtureEnv(root = root, dataset = dataset)
                 val question = questionForDataset(dataset)
                 val query = queryForDataset(dataset)
@@ -39,7 +39,8 @@ class PromptSnapshotMatrixTest {
                 val config = createConfig(env = env, mode = mode)
 
                 val constructionPrompt = renderConstructionPrompt(dataset = dataset, mode = mode, config = config, env = env)
-                val decompositionPrompt = renderDecompositionPrompt(dataset = dataset, config = config, schemaPath = env.schemaPath, question = question)
+                val decompositionPrompt =
+                    renderDecompositionPrompt(dataset = dataset, config = config, schemaPath = env.schemaPath, question = question)
                 val retriever = createRetriever(dataset = dataset, mode = mode, config = config, env = env)
                 val retrievalPrompt = retriever.generatePrompt(question = question, context = context)
                 val ircotBackendPrompt =
@@ -106,7 +107,11 @@ class PromptSnapshotMatrixTest {
         }
 
         assertEquals(42, snapshots.size)
-        assertEquals(EXPECTED_HASHES, snapshots, "Snapshot mismatch. Actual hashes:\n${snapshots.entries.joinToString("\n") { (k, v) -> "\"$k\" to \"$v\"," }}")
+        assertEquals(
+            EXPECTED_HASHES,
+            snapshots,
+            "Snapshot mismatch. Actual hashes:\n${snapshots.entries.joinToString("\n") { (k, v) -> "\"$k\" to \"$v\"," }}",
+        )
     }
 
     private fun createConfig(
@@ -157,7 +162,7 @@ class PromptSnapshotMatrixTest {
                                   "triples": [["PERSON#1", "related_to", "ORG#1"]],
                                   "entity_types": {"PERSON#1": "person", "ORG#1": "organization"}
                                 }
-                            """.trimIndent()
+                                """.trimIndent()
                         }
                     },
             )
@@ -211,7 +216,7 @@ class PromptSnapshotMatrixTest {
     ): FixtureEnv {
         val schemaPath = root.resolve("schemas/$dataset.json").also { it.parent.createDirectories() }
         val corpusPath = root.resolve("data/${dataset}_corpus.json").also { it.parent.createDirectories() }
-        val qaPath = root.resolve("data/${dataset}.json").also { it.parent.createDirectories() }
+        val qaPath = root.resolve("data/$dataset.json").also { it.parent.createDirectories() }
         val graphPath = root.resolve("output/graphs/${dataset}_new.json").also { it.parent.createDirectories() }
         val chunksPath = root.resolve("output/chunks/$dataset.txt").also { it.parent.createDirectories() }
 
