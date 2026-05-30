@@ -1,0 +1,27 @@
+name: Parity Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  parity-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kotlin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Run parity gate
+        run: ./gradlew --no-daemon parityCheck
