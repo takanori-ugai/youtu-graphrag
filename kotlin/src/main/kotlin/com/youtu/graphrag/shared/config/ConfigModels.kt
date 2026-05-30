@@ -54,6 +54,32 @@ data class AgentConfig(
     val enableParallelSubquestions: Boolean = true,
 )
 
+data class RetrievalStrategyConfig(
+    val enableParallel: Boolean = true,
+    val enabled: List<String> =
+        listOf(
+            "lexical_triple",
+            "semantic_triple",
+            "path_expand",
+            "community_triple",
+            "lexical_chunk",
+            "semantic_chunk",
+            "triple_chunk_bridge",
+        ),
+    val weights: Map<String, Double> =
+        mapOf(
+            "lexical_triple" to 1.0,
+            "semantic_triple" to 1.2,
+            "path_expand" to 0.8,
+            "community_triple" to 0.6,
+            "lexical_chunk" to 1.0,
+            "semantic_chunk" to 1.2,
+            "triple_chunk_bridge" to 1.0,
+        ),
+    val timeoutMs: Long = 1500,
+    val maxConcurrency: Int = 4,
+)
+
 data class RetrievalConfig(
     val topK: Int = 5,
     val recallPaths: Int = 2,
@@ -66,6 +92,7 @@ data class RetrievalConfig(
     val cacheDir: String = "retriever/faiss_cache_new",
     val faiss: FaissConfig = FaissConfig(),
     val agent: AgentConfig = AgentConfig(),
+    val strategy: RetrievalStrategyConfig = RetrievalStrategyConfig(),
 )
 
 data class EmbeddingsConfig(

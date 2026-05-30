@@ -137,6 +137,29 @@
     },
     "recall_paths": 2,
     "similarity_threshold": 0.3,
+    "strategy": {
+      "enable_parallel": true,
+      "enabled": [
+        "lexical_triple",
+        "semantic_triple",
+        "path_expand",
+        "community_triple",
+        "lexical_chunk",
+        "semantic_chunk",
+        "triple_chunk_bridge"
+      ],
+      "weights": {
+        "lexical_triple": 1.0,
+        "semantic_triple": 1.2,
+        "path_expand": 0.8,
+        "community_triple": 0.6,
+        "lexical_chunk": 1.0,
+        "semantic_chunk": 1.2,
+        "triple_chunk_bridge": 1.0
+      },
+      "timeout_ms": 1500,
+      "max_concurrency": 4
+    },
     "top_k": 20,
     "top_k_filter": 20
   },

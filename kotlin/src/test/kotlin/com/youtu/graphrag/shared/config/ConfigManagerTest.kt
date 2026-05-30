@@ -29,7 +29,18 @@ class ConfigManagerTest {
         config.overrideConfig(
             mapOf(
                 "triggers" to mapOf("mode" to "noagent"),
-                "retrieval" to mapOf("top_k" to 9),
+                "retrieval" to
+                    mapOf(
+                        "top_k" to 9,
+                        "strategy" to
+                            mapOf(
+                                "enable_parallel" to false,
+                                "enabled" to listOf("lexical_triple", "lexical_chunk"),
+                                "weights" to mapOf("lexical_triple" to 1.5),
+                                "timeout_ms" to 900,
+                                "max_concurrency" to 2,
+                            ),
+                    ),
                 "construction" to
                     mapOf(
                         "tree_comm" to
@@ -49,6 +60,11 @@ class ConfigManagerTest {
         assertEquals(true, config.treeComm.enableSummary)
         assertEquals(0.45, config.treeComm.mergeThreshold)
         assertEquals(6, config.treeComm.maxIterations)
+        assertEquals(false, config.retrieval.strategy.enableParallel)
+        assertEquals(listOf("lexical_triple", "lexical_chunk"), config.retrieval.strategy.enabled)
+        assertEquals(1.5, config.retrieval.strategy.weights["lexical_triple"])
+        assertEquals(900, config.retrieval.strategy.timeoutMs)
+        assertEquals(2, config.retrieval.strategy.maxConcurrency)
     }
 
     @Test
@@ -119,6 +135,64 @@ class ConfigManagerTest {
 
         assertFailsWith<IllegalArgumentException> {
             config.saveConfig(tempRoot.resolve("saved_config.yaml").toString())
+        }
+    }
+
+    @Test
+    fun `rejects invalid retrieval strategy config values`() {
+        val config = ConfigManager("config/base_config.json")
+
+        assertFailsWith<IllegalArgumentException> {
+            config.overrideConfig(
+                mapOf(
+                    "retrieval" to
+                        mapOf(
+                            "strategy" to
+                                mapOf(
+                                    "timeout_ms" to 0,
+                                ),
+                        ),
+                ),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            config.overrideConfig(
+                mapOf(
+                    "retrieval" to
+                        mapOf(
+                            "strategy" to
+                                mapOf(
+                                    "enabled" to emptyList<String>(),
+                                ),
+                        ),
+                ),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            config.overrideConfig(
+                mapOf(
+                    "retrieval" to
+                        mapOf(
+                            "strategy" to
+                                mapOf(
+                                    "enabled" to listOf("lexical-triple"),
+                                ),
+                        ),
+                ),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            config.overrideConfig(
+                mapOf(
+                    "retrieval" to
+                        mapOf(
+                            "strategy" to
+                                mapOf(
+                                    "weights" to mapOf("lexical-triple" to 1.0),
+                                ),
+                        ),
+                ),
+            )
         }
     }
 }
