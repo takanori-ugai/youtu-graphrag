@@ -118,6 +118,12 @@ tasks {
         }
     }
 
+    val parityCheck by registering {
+        group = "verification"
+        description = "CI parity gate alias; runs the full test suite."
+        dependsOn("test")
+    }
+
     // Separate task for scriptable/CLI runs; keeps `run` intact for IDE defaults.
     val execute by registering(JavaExec::class) {
         group = "application"
