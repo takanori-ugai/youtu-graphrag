@@ -8,6 +8,13 @@ import com.youtu.graphrag.shared.graph.GraphRelationship
 import com.youtu.graphrag.shared.retriever.nlp.QueryNlp
 import com.youtu.graphrag.shared.retriever.nlp.QueryNlpFactory
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.file.Path
 import java.util.Locale
 import kotlin.io.path.createDirectories
@@ -82,6 +89,17 @@ private data class ScoredTriple(
     val record: TripleRecord,
     val score: Double,
     val ordinal: Int,
+)
+
+private data class StrategyScore<T>(
+    val strategy: String,
+    val scores: Map<T, Double>,
+)
+
+private data class FusedScore(
+    val score: Double,
+    val strategies: Set<String>,
+    val dominantStrategy: String,
 )
 
 private data class EmbeddingCacheFile(
@@ -208,6 +226,8 @@ class KTRetriever private constructor(
             } else {
                 question
             }
+        val strategyConfig = config.retrieval.strategy
+        val enabledStrategies = strategyConfig.enabled.map { it.lowercase(Locale.ROOT) }.toSet()
         val normalizedQuestionKeywords =
             nlpAnalysis
                 .normalizedKeywordSet()
@@ -222,25 +242,64 @@ class KTRetriever private constructor(
                 topLimit = minOf(vectorSearchK, retrievalPool.size.coerceAtLeast(1)),
                 textSelector = { record -> record.searchableText },
             )
-
         val expandedTriples = expandTriplesFromSeeds(seedTriples, retrievalPool).ifEmpty { seedTriples }
-        val vectorTripleScores =
-            if (vectorEnabled) {
-                vectorSearchScoresForTriples(
-                    question = enhancedQuestion,
-                    searchLimit = vectorSearchK,
-                    allowedTriples = expandedTriples,
-                )
-            } else {
-                emptyMap()
-            }
-        val selectedTripleRankings =
-            rankTriplesPythonCompatible(
-                triples = expandedTriples,
-                questionKeywords = normalizedQuestionKeywords,
-                vectorScores = vectorTripleScores,
-                topLimit = normalizedTopK,
+        val tripleStrategies =
+            executeStrategies(
+                strategyDefinitions =
+                    listOf(
+                        "lexical_triple" to {
+                            retrievalPool.associateWith { record ->
+                                keywordMatchCount(record.searchableText, normalizedQuestionKeywords).toDouble()
+                            }
+                        },
+                        "semantic_triple" to {
+                            if (!vectorEnabled) {
+                                emptyMap()
+                            } else {
+                                vectorSearchScoresForTriples(
+                                    question = enhancedQuestion,
+                                    searchLimit = vectorSearchK,
+                                    allowedTriples = retrievalPool,
+                                )
+                            }
+                        },
+                        "path_expand" to {
+                            if (!config.retrieval.enableHighRecall) {
+                                emptyMap()
+                            } else {
+                                expandedTriples.associateWith { triple ->
+                                    if (triple in seedTriples) 1.0 else 0.6
+                                }
+                            }
+                        },
+                        "community_triple" to {
+                            retrievalPool
+                                .filter { record ->
+                                    record.relation.lowercase(Locale.ROOT) in
+                                        setOf("member_of", "keyword_of", "represented_by", "kw_filter_by")
+                                }.associateWith { record ->
+                                    0.4 + keywordMatchCount(record.searchableText, normalizedQuestionKeywords).toDouble()
+                                }
+                        },
+                    ),
+                enabledStrategies = enabledStrategies,
+                enableParallel = strategyConfig.enableParallel,
+                timeoutMs = strategyConfig.timeoutMs,
+                maxConcurrency = strategyConfig.maxConcurrency,
             )
+        val fusedTripleScores = fuseScores(tripleStrategies, strategyConfig.weights)
+        val selectedTripleRankings =
+            fusedTripleScores.entries
+                .map { (record, fused) ->
+                    ScoredTriple(
+                        record = record,
+                        score = fused.score,
+                        ordinal = tripleOrdinalByRecord[record] ?: Int.MAX_VALUE,
+                    )
+                }.sortedWith(
+                    compareByDescending<ScoredTriple> { value -> value.score }
+                        .thenBy { value -> value.ordinal },
+                ).take(normalizedTopK)
         val selectedTripleRaw =
             selectedTripleRankings
                 .map { ranking -> ranking.record }
@@ -264,23 +323,63 @@ class KTRetriever private constructor(
             }
 
         val chunkVectorRankings =
-            if (vectorEnabled) {
-                chunkVectorIndex
-                    ?.search(enhancedQuestion, normalizedTopK)
-                    .orEmpty()
-                    .take(normalizedTopK)
-                    .map { hit -> ChunkRanking(chunkId = hit.item.id, score = hit.score) }
-            } else {
-                rankedItems(
-                    items = chunkRecords,
-                    questionKeywords = normalizedQuestionKeywords,
-                    topLimit = normalizedTopK,
-                    textSelector = { chunk -> chunk.text },
-                ).map { chunk ->
-                    ChunkRanking(
-                        chunkId = chunk.id,
-                        score = keywordMatchCount(chunk.text, normalizedQuestionKeywords).toDouble(),
+            run {
+                val bridgeChunkScores =
+                    selectedTripleRankings
+                        .flatMap { ranking ->
+                            ranking.record.chunkIds.map { chunkId -> chunkId to ranking.score }
+                        }.groupBy(keySelector = { pair -> pair.first }, valueTransform = { pair -> pair.second })
+                        .mapValues { (_, values) -> values.sum() }
+                val chunkStrategies =
+                    executeStrategies(
+                        strategyDefinitions =
+                            listOf(
+                                "lexical_chunk" to {
+                                    chunkRecords.associate { chunk ->
+                                        chunk.id to keywordMatchCount(chunk.text, normalizedQuestionKeywords).toDouble()
+                                    }
+                                },
+                                "semantic_chunk" to {
+                                    if (!vectorEnabled) {
+                                        emptyMap()
+                                    } else {
+                                        chunkVectorIndex
+                                            ?.search(enhancedQuestion, vectorSearchK)
+                                            .orEmpty()
+                                            .associate { hit -> hit.item.id to hit.score }
+                                    }
+                                },
+                                "triple_chunk_bridge" to {
+                                    bridgeChunkScores
+                                },
+                            ),
+                        enabledStrategies = enabledStrategies,
+                        enableParallel = strategyConfig.enableParallel,
+                        timeoutMs = strategyConfig.timeoutMs,
+                        maxConcurrency = strategyConfig.maxConcurrency,
                     )
+
+                val fusedChunkScores = fuseScores(chunkStrategies, strategyConfig.weights)
+                if (fusedChunkScores.isEmpty()) {
+                    rankedItems(
+                        items = chunkRecords,
+                        questionKeywords = normalizedQuestionKeywords,
+                        topLimit = normalizedTopK,
+                        textSelector = { chunk -> chunk.text },
+                    ).map { chunk ->
+                        ChunkRanking(
+                            chunkId = chunk.id,
+                            score = keywordMatchCount(chunk.text, normalizedQuestionKeywords).toDouble(),
+                        )
+                    }
+                } else {
+                    fusedChunkScores.entries
+                        .filter { (chunkId, _) -> chunkId in chunkById }
+                        .sortedWith(
+                            compareByDescending<Map.Entry<String, FusedScore>> { entry -> entry.value.score }
+                                .thenBy { entry -> entry.key },
+                        ).take(normalizedTopK)
+                        .map { entry -> ChunkRanking(chunkId = entry.key, score = entry.value.score) }
                 }
             }
 
@@ -500,6 +599,122 @@ class KTRetriever private constructor(
                 """.trimIndent()
             }
         }
+
+    private fun <T> executeStrategies(
+        strategyDefinitions: List<Pair<String, () -> Map<T, Double>>>,
+        enabledStrategies: Set<String>,
+        enableParallel: Boolean,
+        timeoutMs: Long,
+        maxConcurrency: Int,
+    ): List<StrategyScore<T>> {
+        val active =
+            strategyDefinitions.filter { (strategyName, _) ->
+                strategyName.lowercase(Locale.ROOT) in enabledStrategies
+            }
+        if (active.isEmpty()) {
+            return emptyList()
+        }
+
+        return if (!enableParallel || active.size == 1) {
+            active.map { (strategyName, strategyFn) ->
+                val scores =
+                    runCatching { strategyFn() }
+                        .getOrElse { error ->
+                            logger.warn(error) { "Retriever strategy '$strategyName' failed in sequential mode." }
+                            emptyMap()
+                        }
+                StrategyScore(strategy = strategyName, scores = scores)
+            }
+        } else {
+            runBlocking {
+                val semaphore = Semaphore(maxConcurrency.coerceAtLeast(1))
+                active
+                    .map { (strategyName, strategyFn) ->
+                        async(Dispatchers.Default) {
+                            semaphore.withPermit {
+                                val scores =
+                                    withTimeoutOrNull(timeoutMs) {
+                                        runCatching { strategyFn() }
+                                            .getOrElse { error ->
+                                                logger.warn(error) { "Retriever strategy '$strategyName' failed." }
+                                                emptyMap()
+                                            }
+                                    } ?: run {
+                                        logger.warn {
+                                            "Retriever strategy '$strategyName' timed out after ${timeoutMs}ms."
+                                        }
+                                        emptyMap()
+                                    }
+                                StrategyScore(strategy = strategyName, scores = scores)
+                            }
+                        }
+                    }.awaitAll()
+            }
+        }
+    }
+
+    private fun <T> fuseScores(
+        strategyScores: List<StrategyScore<T>>,
+        weights: Map<String, Double>,
+    ): Map<T, FusedScore> {
+        if (strategyScores.isEmpty()) {
+            return emptyMap()
+        }
+
+        val fused = linkedMapOf<T, Double>()
+        val contributingStrategies = linkedMapOf<T, MutableSet<String>>()
+        val dominantContributions = linkedMapOf<T, Pair<String, Double>>()
+
+        strategyScores.forEach { strategyScore ->
+            if (strategyScore.scores.isEmpty()) {
+                return@forEach
+            }
+            val normalized = normalizeScores(strategyScore.scores)
+            val weight = weights[strategyScore.strategy] ?: 1.0
+            if (weight <= 0.0) {
+                return@forEach
+            }
+            normalized.forEach { (item, score) ->
+                if (score <= 0.0) {
+                    return@forEach
+                }
+                val weighted = score * weight
+                fused[item] = (fused[item] ?: 0.0) + weighted
+                contributingStrategies.getOrPut(item) { linkedSetOf() }.add(strategyScore.strategy)
+                val previous = dominantContributions[item]
+                if (previous == null || weighted > previous.second ||
+                    (weighted == previous.second && strategyScore.strategy < previous.first)
+                ) {
+                    dominantContributions[item] = strategyScore.strategy to weighted
+                }
+            }
+        }
+
+        return fused.mapValues { (item, score) ->
+            FusedScore(
+                score = score,
+                strategies = contributingStrategies[item].orEmpty(),
+                dominantStrategy = dominantContributions[item]?.first.orEmpty(),
+            )
+        }
+    }
+
+    private fun <T> normalizeScores(scores: Map<T, Double>): Map<T, Double> {
+        if (scores.isEmpty()) {
+            return emptyMap()
+        }
+        val positives = scores.filterValues { value -> value.isFinite() && value > 0.0 }
+        if (positives.isEmpty()) {
+            return emptyMap()
+        }
+        val maxScore = positives.values.maxOrNull() ?: return emptyMap()
+        val minScore = positives.values.minOrNull() ?: return emptyMap()
+        if (maxScore == minScore) {
+            return positives.mapValues { 1.0 }
+        }
+        val range = maxScore - minScore
+        return positives.mapValues { (_, value) -> (value - minScore) / range }
+    }
 
     private fun filterTriplesByInvolvedTypes(
         records: List<TripleRecord>,

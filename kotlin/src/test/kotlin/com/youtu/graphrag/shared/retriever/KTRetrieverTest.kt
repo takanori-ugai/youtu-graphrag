@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
+import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -487,6 +488,246 @@ class KTRetrieverTest {
     }
 
     @Test
+    fun `processRetrievalResults keeps ranking stable between parallel and sequential strategy execution`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-parallel-stability-test")
+        val config = createTestConfig(root)
+        val datasetName = "parallel_stability_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "Alpha",
+                        sourceLabel = "entity",
+                        relation = "works_with",
+                        targetName = "Beta",
+                        targetLabel = "entity",
+                        chunkId = "c1",
+                    ),
+                    relationship(
+                        sourceName = "Beta",
+                        sourceLabel = "entity",
+                        relation = "located_in",
+                        targetName = "Tokyo",
+                        targetLabel = "location",
+                        chunkId = "c2",
+                    ),
+                ),
+        )
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries =
+                listOf(
+                    "c1" to "Alpha works with Beta.",
+                    "c2" to "Beta is located in Tokyo.",
+                ),
+        )
+
+        val retriever =
+            createRetriever(
+                datasetName = datasetName,
+                config = config,
+                graphPath = graphPath.toString(),
+                rootDir = root,
+                topK = 2,
+                recallPaths = 2,
+            )
+
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "strategy" to
+                            mapOf(
+                                "enable_parallel" to true,
+                            ),
+                    ),
+            ),
+        )
+        val parallelResult = retriever.processRetrievalResults(question = "How is Alpha related to Tokyo?").first
+
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "strategy" to
+                            mapOf(
+                                "enable_parallel" to false,
+                            ),
+                    ),
+            ),
+        )
+        val sequentialResult = retriever.processRetrievalResults(question = "How is Alpha related to Tokyo?").first
+
+        assertEquals(parallelResult["triples"], sequentialResult["triples"])
+        assertEquals(parallelResult["chunk_ids"], sequentialResult["chunk_ids"])
+    }
+
+    @Test
+    fun `processRetrievalResults honors strategy enable-disable configuration`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-strategy-enable-disable-test")
+        val config = createTestConfig(root)
+        val datasetName = "strategy_toggle_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "Alpha",
+                        sourceLabel = "entity",
+                        relation = "related_to",
+                        targetName = "Beta",
+                        targetLabel = "entity",
+                        chunkId = "c1",
+                    ),
+                    relationship(
+                        sourceName = "Beta",
+                        sourceLabel = "entity",
+                        relation = "connected_to",
+                        targetName = "Gamma",
+                        targetLabel = "entity",
+                        chunkId = "c2",
+                    ),
+                ),
+        )
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries =
+                listOf(
+                    "c1" to "Alpha related to Beta.",
+                    "c2" to "Beta connected to Gamma.",
+                ),
+        )
+
+        val retriever =
+            createRetriever(
+                datasetName = datasetName,
+                config = config,
+                graphPath = graphPath.toString(),
+                rootDir = root,
+                topK = 2,
+                recallPaths = 2,
+            )
+
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "strategy" to
+                            mapOf(
+                                "enabled" to listOf("lexical_triple", "lexical_chunk"),
+                            ),
+                    ),
+            ),
+        )
+        val noPathExpandTriples =
+            (
+                (retriever.processRetrievalResults(question = "What is related to Alpha?").first["triples"] as? List<*>)
+                    ?.map { it.toString() }
+            ).orEmpty()
+
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "strategy" to
+                            mapOf(
+                                "enabled" to listOf("lexical_triple", "path_expand", "lexical_chunk"),
+                            ),
+                    ),
+            ),
+        )
+        val withPathExpandTriples =
+            (
+                (retriever.processRetrievalResults(question = "What is related to Alpha?").first["triples"] as? List<*>)
+                    ?.map { it.toString() }
+            ).orEmpty()
+
+        assertTrue(noPathExpandTriples.any { triple -> "related_to" in triple })
+        assertTrue(noPathExpandTriples.none { triple -> "connected_to" in triple })
+        assertTrue(withPathExpandTriples.any { triple -> "connected_to" in triple })
+    }
+
+    @Test
+    fun `processRetrievalResults keeps deterministic tie-break ordering`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-deterministic-tiebreak-test")
+        val config = createTestConfig(root)
+        val datasetName = "deterministic_tiebreak_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "OrderA",
+                        sourceLabel = "entity",
+                        relation = "aligned_with",
+                        targetName = "OrderB",
+                        targetLabel = "entity",
+                        chunkId = "c1",
+                    ),
+                    relationship(
+                        sourceName = "OrderC",
+                        sourceLabel = "entity",
+                        relation = "aligned_with",
+                        targetName = "OrderD",
+                        targetLabel = "entity",
+                        chunkId = "c2",
+                    ),
+                ),
+        )
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries =
+                listOf(
+                    "c1" to "OrderA aligned with OrderB.",
+                    "c2" to "OrderC aligned with OrderD.",
+                ),
+        )
+
+        val retriever =
+            createRetriever(
+                datasetName = datasetName,
+                config = config,
+                graphPath = graphPath.toString(),
+                rootDir = root,
+                topK = 2,
+                recallPaths = 1,
+            )
+
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "strategy" to
+                            mapOf(
+                                "enabled" to listOf("lexical_triple", "lexical_chunk"),
+                            ),
+                    ),
+            ),
+        )
+
+        val firstRun =
+            (
+                (retriever.processRetrievalResults(question = "aligned_with").first["triples"] as? List<*>)
+                    ?.map { it.toString() }
+            ).orEmpty()
+        val secondRun =
+            (
+                (retriever.processRetrievalResults(question = "aligned_with").first["triples"] as? List<*>)
+                    ?.map { it.toString() }
+            ).orEmpty()
+
+        assertEquals(firstRun, secondRun)
+        assertTrue(firstRun.firstOrNull()?.contains("OrderA") == true)
+    }
+
+    @Test
     fun `buildIndices persists embedding caches when caching enabled`() {
         val root = Files.createTempDirectory("youtu-graphrag-retriever-cache-enabled-test")
         val config = createTestConfig(root)
@@ -644,6 +885,300 @@ class KTRetrieverTest {
         assertEquals(1.0, chunkFirst)
         assertTrue(cacheRoot.resolve("triple_embedding_cache.npz").exists())
         assertTrue(cacheRoot.resolve("chunk_embedding_cache.npz").exists())
+    }
+
+    @Test
+    fun `buildIndices evicts stale cache keys`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-stale-cache-eviction-test")
+        val config = createTestConfig(root)
+        val datasetName = "stale_cache_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "AliveA",
+                        sourceLabel = "entity",
+                        relation = "maps_to",
+                        targetName = "AliveB",
+                        targetLabel = "entity",
+                        chunkId = "c1",
+                    ),
+                ),
+        )
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries = listOf("c1" to "AliveA maps to AliveB."),
+        )
+
+        val cacheRoot = root.resolve("retriever/faiss_cache_new").resolve(datasetName)
+        cacheRoot.createDirectories()
+        val dims = HashTextEmbedder().dimensions
+        NpzEmbeddingCache.write(
+            path = cacheRoot.resolve("triple_embedding_cache.npz"),
+            vectorsByKey =
+                mapOf(
+                    "[\"AliveA\", \"maps_to\", \"AliveB\"]" to FloatArray(dims) { 0.1f },
+                    "[\"STALE_A\", \"stale_rel\", \"STALE_B\"]" to FloatArray(dims) { 0.2f },
+                ),
+            expectedDimensions = dims,
+        )
+        NpzEmbeddingCache.write(
+            path = cacheRoot.resolve("chunk_embedding_cache.npz"),
+            vectorsByKey =
+                mapOf(
+                    "c1" to FloatArray(dims) { 0.1f },
+                    "stale_chunk" to FloatArray(dims) { 0.2f },
+                ),
+            expectedDimensions = dims,
+        )
+
+        createRetriever(
+            datasetName = datasetName,
+            config = config,
+            graphPath = graphPath.toString(),
+            rootDir = root,
+        )
+
+        val tripleCacheTree = mapper.readTree(cacheRoot.resolve("triple_embedding_cache.json").toFile())
+        val chunkCacheTree = mapper.readTree(cacheRoot.resolve("chunk_embedding_cache.json").toFile())
+        assertTrue(tripleCacheTree.path("vectors").path("[\"STALE_A\", \"stale_rel\", \"STALE_B\"]").isMissingNode)
+        assertTrue(chunkCacheTree.path("vectors").path("stale_chunk").isMissingNode)
+    }
+
+    @Test
+    fun `buildIndices rebuilds cache on metadata mismatch`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-cache-metadata-mismatch-test")
+        val config = createTestConfig(root)
+        val datasetName = "cache_mismatch_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "MetaA",
+                        sourceLabel = "entity",
+                        relation = "links_to",
+                        targetName = "MetaB",
+                        targetLabel = "entity",
+                        chunkId = "c1",
+                    ),
+                ),
+        )
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries = listOf("c1" to "MetaA links to MetaB."),
+        )
+
+        val cacheRoot = root.resolve("retriever/faiss_cache_new").resolve(datasetName)
+        cacheRoot.createDirectories()
+        cacheRoot.resolve("triple_embedding_cache.json").writeText(
+            """
+            {
+              "modelTag": "stale-model",
+              "dimensions": 3,
+              "vectors": {
+                "[\"MetaA\", \"links_to\", \"MetaB\"]": [1.0, 0.0, 0.0]
+              }
+            }
+            """.trimIndent(),
+        )
+        cacheRoot.resolve("chunk_embedding_cache.json").writeText(
+            """
+            {
+              "modelTag": "stale-model",
+              "dimensions": 3,
+              "vectors": {
+                "c1": [1.0, 0.0, 0.0]
+              }
+            }
+            """.trimIndent(),
+        )
+
+        createRetriever(
+            datasetName = datasetName,
+            config = config,
+            graphPath = graphPath.toString(),
+            rootDir = root,
+        )
+
+        val tripleCacheText = cacheRoot.resolve("triple_embedding_cache.json").readText()
+        val chunkCacheText = cacheRoot.resolve("chunk_embedding_cache.json").readText()
+        assertTrue("\"stale-model\"" !in tripleCacheText)
+        assertTrue("\"stale-model\"" !in chunkCacheText)
+        assertTrue(cacheRoot.resolve("triple_embedding_cache.npz").exists())
+        assertTrue(cacheRoot.resolve("chunk_embedding_cache.npz").exists())
+    }
+
+    @Test
+    fun `processRetrievalResults tolerates missing chunk file`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-missing-chunk-file-test")
+        val config = createTestConfig(root)
+        val datasetName = "missing_chunk_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "ChunklessA",
+                        sourceLabel = "entity",
+                        relation = "mentions",
+                        targetName = "ChunklessB",
+                        targetLabel = "entity",
+                        chunkId = "cx",
+                    ),
+                ),
+        )
+
+        val retriever =
+            createRetriever(
+                datasetName = datasetName,
+                config = config,
+                graphPath = graphPath.toString(),
+                rootDir = root,
+            )
+        val (results, retrievalTime) = retriever.processRetrievalResults(question = "What mentions ChunklessA?")
+        val chunkIds = (results["chunk_ids"] as? List<*>)?.map { it.toString() }.orEmpty()
+        val chunkContents = (results["chunk_contents"] as? List<*>)?.map { it.toString() }.orEmpty()
+
+        assertTrue(retrievalTime >= 0.0)
+        assertTrue(chunkIds.isEmpty())
+        assertTrue(chunkContents.isEmpty())
+    }
+
+    @Test
+    fun `processRetrievalResults tolerates malformed graph json`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-malformed-graph-test")
+        val config = createTestConfig(root)
+        val datasetName = "malformed_graph_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+        graphPath.parent?.createDirectories()
+        graphPath.writeText("{ malformed")
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries = listOf("c1" to "Fallback chunk content."),
+        )
+
+        val retriever =
+            createRetriever(
+                datasetName = datasetName,
+                config = config,
+                graphPath = graphPath.toString(),
+                rootDir = root,
+            )
+        val (results, retrievalTime) = retriever.processRetrievalResults(question = "Anything here?")
+        val triples = (results["triples"] as? List<*>)?.map { it.toString() }.orEmpty()
+
+        assertTrue(retrievalTime >= 0.0)
+        assertTrue(triples.isEmpty())
+    }
+
+    @Test
+    fun `executeStrategies isolates strategy failures`() {
+        val config = ConfigManager("config/base_config.json")
+        val retriever = createRetriever(datasetName = "demo", config = config)
+        val method =
+            retriever::class.java.getDeclaredMethod(
+                "executeStrategies",
+                List::class.java,
+                Set::class.java,
+                Boolean::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+            )
+        method.isAccessible = true
+
+        val strategyDefinitions =
+            listOf(
+                "fast_ok" to ({ mapOf("item_fast" to 1.0) }),
+                "throws_error" to ({ throw IllegalStateException("boom") }),
+            )
+
+        @Suppress("UNCHECKED_CAST")
+        val scores =
+            method.invoke(
+                retriever,
+                strategyDefinitions,
+                setOf("fast_ok", "throws_error"),
+                true,
+                5L,
+                3,
+            ) as List<Any>
+
+        fun readStrategyName(score: Any): String {
+            val field = score::class.java.getDeclaredField("strategy")
+            field.isAccessible = true
+            return field.get(score).toString()
+        }
+
+        fun readScores(score: Any): Map<String, Double> {
+            val field = score::class.java.getDeclaredField("scores")
+            field.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            return field.get(score) as Map<String, Double>
+        }
+
+        val byStrategy = scores.associateBy(::readStrategyName, ::readScores)
+        assertTrue(byStrategy["fast_ok"].orEmpty().isNotEmpty())
+        assertTrue(byStrategy["throws_error"].orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `processRetrievalResults remains stable with tiny strategy timeout`() {
+        val root = Files.createTempDirectory("youtu-graphrag-retriever-tiny-timeout-stability-test")
+        val config = createTestConfig(root)
+        config.overrideConfig(
+            mapOf(
+                "retrieval" to
+                    mapOf(
+                        "strategy" to
+                            mapOf(
+                                "timeout_ms" to 1,
+                                "enable_parallel" to true,
+                            ),
+                    ),
+            ),
+        )
+        val datasetName = "tiny_timeout_ds"
+        val graphPath = root.resolve("output/graphs/${datasetName}_new.json")
+        writeGraph(
+            graphPath = graphPath,
+            relationships =
+                listOf(
+                    relationship(
+                        sourceName = "TimeoutA",
+                        sourceLabel = "entity",
+                        relation = "relates_to",
+                        targetName = "TimeoutB",
+                        targetLabel = "entity",
+                        chunkId = "c1",
+                    ),
+                ),
+        )
+        writeChunks(
+            chunkFile = root.resolve("output/chunks/$datasetName.txt"),
+            entries = listOf("c1" to "TimeoutA relates to TimeoutB."),
+        )
+
+        val retriever =
+            createRetriever(
+                datasetName = datasetName,
+                config = config,
+                graphPath = graphPath.toString(),
+                rootDir = root,
+                topK = 2,
+            )
+        val (results, retrievalTime) = retriever.processRetrievalResults(question = "What relates to TimeoutA?")
+        val keys = results.keys
+
+        assertTrue(retrievalTime >= 0.0)
+        assertEquals(setOf("triples", "chunk_ids", "chunk_contents", "chunk_retrieval_results"), keys)
     }
 
     @Test

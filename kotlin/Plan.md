@@ -43,10 +43,9 @@ CLI migration parity is prioritized on the critical path.
 ### C. Retriever
 - Python source: `../models/retriever/enhanced_kt_retriever.py`, `../models/retriever/faiss_filter.py`
 - Kotlin source: [KTRetriever.kt](file:///home/ugai/youtu-graphrag/kotlin/src/main/kotlin/com/youtu/graphrag/shared/retriever/KTRetriever.kt)
-- Status: **Completed (Functional Parity)**
-- Details: Implemented hybrid lexical (Lucene or keyword match) + semantic vector retrieval (via `LuceneAnnIndex` and Multik-backed cache). Exposes identical output shape (`triples`, `chunk_ids`, `chunk_contents`, `chunk_retrieval_results`).
-- Gaps: Python retriever supports richer parallel retrieval strategy internals. Kotlin parity is simplified to a single-pipeline hybrid strategy. Fixture dataset coverage is currently limited but the testing harness is fully integrated.
-- Verification: [RetrievalFixtureParityTest.kt](file:///home/ugai/youtu-graphrag/kotlin/src/test/kotlin/com/youtu/graphrag/shared/retriever/RetrievalFixtureParityTest.kt) and [KTRetrieverTest.kt](file:///home/ugai/youtu-graphrag/kotlin/src/test/kotlin/com/youtu/graphrag/shared/retriever/KTRetrieverTest.kt) pass.
+- Status: **Completed (Behavioral Parity)**
+- Details: Implemented multi-strategy retrieval fan-out/fan-in with deterministic weighted fusion, bounded parallel execution, timeout/failure isolation, community/path-aware retrieval controls, and JSON+NPZ cache handling. Output shape remains stable (`triples`, `chunk_ids`, `chunk_contents`, `chunk_retrieval_results`).
+- Verification: [RetrievalFixtureParityTest.kt](file:///home/ugai/youtu-graphrag/kotlin/src/test/kotlin/com/youtu/graphrag/shared/retriever/RetrievalFixtureParityTest.kt), [KTRetrieverTest.kt](file:///home/ugai/youtu-graphrag/kotlin/src/test/kotlin/com/youtu/graphrag/shared/retriever/KTRetrieverTest.kt), and [RetrieverNlpFixtureParityTest.kt](file:///home/ugai/youtu-graphrag/kotlin/src/test/kotlin/com/youtu/graphrag/shared/retriever/RetrieverNlpFixtureParityTest.kt) pass.
 
 ### D. Decomposer + IRCoT
 - Python source: `../models/retriever/agentic_decomposer.py`, `../main.py`, `../backend.py`
@@ -114,9 +113,9 @@ Kotlin conversion is accepted when all are true:
 - **Problem**: The [.github/workflows/parity-gate.yml](file:///home/ugai/youtu-graphrag/.github/workflows/parity-gate.yml) workflow attempts to call `./gradlew parityCheck`, which is currently undefined in `build.gradle.kts` and causes build failures.
 - **Remediation**: Either configure a custom Gradle task named `parityCheck` to run the parity test suites, or modify the workflow to invoke `./gradlew test`.
 
-### 2. Fixture Breadth Expansion
-- **Problem**: `retrieval_parity_fixtures.json` is currently limited to 1 simple single-hop fixture.
-- **Remediation**: Build and commit additional complex multi-hop and community-aware retrieval fixtures to ensure regressions are caught across edge cases.
+### 2. Retriever Benchmark Expansion
+- **Problem**: Retriever parity fixtures are now expanded and stable, but operational benchmark snapshots (latency p50/p95 and cache-hit ratio trend) are not yet persisted as CI artifacts.
+- **Remediation**: Add benchmark artifact publication to CI for regression monitoring over time.
 
 ### 3. Workspace State (Unrelated Pre-existing Changes)
 - **Observed on 2026-05-30**: Pre-existing changes outside this TreeComm work were present in the working tree:

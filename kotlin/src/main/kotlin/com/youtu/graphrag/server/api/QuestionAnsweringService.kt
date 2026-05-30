@@ -33,6 +33,11 @@ data class QaStageUpdate(
     val payload: Map<String, Any?> = emptyMap(),
 )
 
+private data class GraphResolution(
+    val graphPath: Path,
+    val usedDemoFallback: Boolean,
+)
+
 private data class SubQuestionRetrieval(
     val index: Int,
     val subQuestionText: String,
@@ -69,9 +74,10 @@ class QuestionAnsweringService(
         onQaUpdate: suspend (QaStageUpdate) -> Unit = {},
     ): QuestionResponse {
         val safeDatasetName = requireSafeDatasetName(datasetName)
-        val graphPath =
+        val graphResolution =
             resolveGraphPathWithDemoFallback(safeDatasetName)
                 ?: throw GraphArtifactNotFoundException("Graph not found. Please construct graph first.")
+        val graphPath = graphResolution.graphPath
         val schemaPath = resolveSchemaPath(safeDatasetName)
 
         val graphq = GraphQ(safeDatasetName, config, llmClient = llmClient)
@@ -323,6 +329,12 @@ class QuestionAnsweringService(
         val finalTriples = tripleEntriesByRaw.keys.toList()
         val finalTriplesFormatted = tripleEntriesByRaw.values.toList()
         val finalChunks = chunkById.values.toList()
+        val responseTriples =
+            if (graphResolution.usedDemoFallback) {
+                emptyList()
+            } else {
+                finalTriples
+            }
 
         val finalContext = buildFinalKnowledgeContext(finalTriplesFormatted, finalChunks)
         finalAnswer =
@@ -338,14 +350,14 @@ class QuestionAnsweringService(
         return QuestionResponse(
             answer = finalAnswer,
             subQuestions = subQuestions,
-            retrievedTriples = finalTriples,
+            retrievedTriples = responseTriples,
             retrievedChunks = finalChunks,
             reasoningSteps = reasoningSteps,
             visualizationData =
                 buildVisualizationData(
                     subQuestions = subQuestions,
                     reasoningSteps = reasoningSteps,
-                    finalTriples = finalTriples,
+                    finalTriples = responseTriples,
                     finalChunks = finalChunks,
                 ),
         )
@@ -854,15 +866,21 @@ class QuestionAnsweringService(
         }
     }
 
-    private fun resolveGraphPathWithDemoFallback(datasetName: String): Path? {
+    private fun resolveGraphPathWithDemoFallback(datasetName: String): GraphResolution? {
         val datasetGraph = resolvePath("${config.output.graphsDir}/${datasetName}_new.json")
         if (datasetGraph.exists()) {
-            return datasetGraph
+            return GraphResolution(
+                graphPath = datasetGraph,
+                usedDemoFallback = false,
+            )
         }
 
         val demoGraph = resolvePath("${config.output.graphsDir}/demo_new.json")
         if (demoGraph.exists()) {
-            return demoGraph
+            return GraphResolution(
+                graphPath = demoGraph,
+                usedDemoFallback = true,
+            )
         }
 
         return null

@@ -165,6 +165,20 @@ class ConfigManager(
             "Invalid construction mode: ${construction.mode}"
         }
         require(retrieval.topK > 0) { "top_k must be positive" }
+        require(retrieval.strategy.timeoutMs > 0) {
+            "retrieval.strategy.timeout_ms must be positive"
+        }
+        require(retrieval.strategy.maxConcurrency > 0) {
+            "retrieval.strategy.max_concurrency must be positive"
+        }
+        require(retrieval.strategy.enabled.isNotEmpty()) {
+            "retrieval.strategy.enabled must not be empty"
+        }
+        retrieval.strategy.weights.forEach { (strategy, weight) ->
+            require(weight >= 0.0) {
+                "retrieval.strategy.weights[$strategy] must be non-negative"
+            }
+        }
         require(treeComm.structWeight in 0.0..1.0) {
             "struct_weight must be between 0 and 1"
         }
