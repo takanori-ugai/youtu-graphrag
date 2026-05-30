@@ -2,6 +2,7 @@ package com.youtu.graphrag.shared.treecomm
 
 import com.youtu.graphrag.shared.graph.GraphNode
 import com.youtu.graphrag.shared.graph.GraphRelationship
+import com.youtu.graphrag.shared.llm.LlmClient
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -62,5 +63,64 @@ class FastTreeCommTest {
                 .toSet()
         assertTrue("Project Alpha" in keywords)
         assertTrue("Bob Team" in keywords || "Carol Team" in keywords)
+    }
+
+    @Test
+    fun `detectCommunities supports hierarchical mode and max community cutoff`() {
+        val nodeA = GraphNode("entity", mapOf("name" to "Alpha"))
+        val nodeB = GraphNode("entity", mapOf("name" to "Beta"))
+        val nodeC = GraphNode("entity", mapOf("name" to "Gamma"))
+        val nodeD = GraphNode("entity", mapOf("name" to "Delta"))
+
+        val relationships =
+            listOf(
+                GraphRelationship(nodeA, "links_to", nodeB),
+                GraphRelationship(nodeB, "links_to", nodeC),
+                GraphRelationship(nodeC, "links_to", nodeD),
+            )
+
+        val communities =
+            FastTreeComm().detectCommunities(
+                relationships = relationships,
+                options =
+                    TreeCommOptions(
+                        enableFastMode = false,
+                        maxTotalCommunities = 1,
+                        mergeThreshold = 0.0,
+                        maxIterations = 10,
+                    ),
+            )
+
+        assertEquals(1, communities.size)
+        assertEquals(4, communities.first()["node_count"])
+    }
+
+    @Test
+    fun `detectCommunities generates summary with deterministic fallback when llm unavailable`() {
+        val nodeA = GraphNode("entity", mapOf("name" to "Alice"))
+        val nodeB = GraphNode("entity", mapOf("name" to "Acme"))
+        val relationships =
+            listOf(
+                GraphRelationship(nodeA, "works_at", nodeB),
+            )
+
+        val llmClient =
+            object : LlmClient {
+                override fun complete(prompt: String): String = ""
+            }
+
+        val communities =
+            FastTreeComm(llmClient).detectCommunities(
+                relationships = relationships,
+                options =
+                    TreeCommOptions(
+                        enableSummary = true,
+                        summaryMaxWords = 16,
+                    ),
+            )
+
+        val summary = communities.first()["summary"]?.toString().orEmpty()
+        assertTrue(summary.isNotBlank())
+        assertTrue(summary.split(Regex("\\s+")).size <= 16)
     }
 }

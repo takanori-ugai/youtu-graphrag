@@ -318,24 +318,52 @@ class KTBuilderTest {
             ),
         )
 
-        val config = createTestConfig(root = root, mode = "noagent")
+        val config =
+            createTestConfig(
+                root = root,
+                mode = "noagent",
+                extraOverrides =
+                    mapOf(
+                        "construction" to
+                            mapOf(
+                                "mode" to "noagent",
+                                "chunk_size" to 4096,
+                                "overlap" to 128,
+                                "min_tail_tokens" to 32,
+                                "datasets_no_chunk" to emptyList<String>(),
+                                "tree_comm" to
+                                    mapOf(
+                                        "enable_fast_mode" to false,
+                                        "max_total_communities" to 2,
+                                        "enable_summary" to true,
+                                        "merge_threshold" to 0.4,
+                                        "max_iterations" to 6,
+                                        "summary_max_words" to 20,
+                                    ),
+                            ),
+                    ),
+            )
         val llmClient =
             object : LlmClient {
-                override fun complete(prompt: String): String =
-                    """
-                    {
-                      "attributes": {},
-                      "triples": [
-                        ["Alice", "works_at", "Acme"],
-                        ["Acme", "located_in", "Tokyo"]
-                      ],
-                      "entity_types": {
-                        "Alice": "person",
-                        "Acme": "organization",
-                        "Tokyo": "location"
-                      }
+                override fun complete(prompt: String): String {
+                    if (prompt.startsWith("Summarize this graph community")) {
+                        return ""
                     }
-                    """.trimIndent()
+                    return """
+                        {
+                          "attributes": {},
+                          "triples": [
+                            ["Alice", "works_at", "Acme"],
+                            ["Acme", "located_in", "Tokyo"]
+                          ],
+                          "entity_types": {
+                            "Alice": "person",
+                            "Acme": "organization",
+                            "Tokyo": "location"
+                          }
+                        }
+                        """.trimIndent()
+                }
             }
 
         val builder =
@@ -360,9 +388,12 @@ class KTBuilderTest {
                 .firstOrNull { relationship -> relationship.relation == "member_of" }
                 ?.endNode
         assertEquals("community", communityNode?.label)
+        val description = communityNode?.properties?.get("description")?.toString().orEmpty()
+        assertTrue(description.startsWith("Community centered on"))
         val members = communityNode?.properties?.get("members") as? List<*>
-        assertTrue(members?.contains("Alice") == true)
-        assertTrue(members?.contains("Acme") == true)
+        assertTrue(members != null)
+        assertTrue(members.contains("Alice"))
+        assertTrue(members.contains("Acme"))
 
         val graphPath = root.resolve("output/graphs/treecomm_ds_new.json")
         assertTrue(graphPath.exists())

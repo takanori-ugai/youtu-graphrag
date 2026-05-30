@@ -30,11 +30,25 @@ class ConfigManagerTest {
             mapOf(
                 "triggers" to mapOf("mode" to "noagent"),
                 "retrieval" to mapOf("top_k" to 9),
+                "construction" to
+                    mapOf(
+                        "tree_comm" to
+                            mapOf(
+                                "enable_fast_mode" to false,
+                                "enable_summary" to true,
+                                "merge_threshold" to 0.45,
+                                "max_iterations" to 6,
+                            ),
+                    ),
             ),
         )
 
         assertEquals("noagent", config.triggers.mode)
         assertEquals(9, config.retrieval.topK)
+        assertEquals(false, config.treeComm.enableFastMode)
+        assertEquals(true, config.treeComm.enableSummary)
+        assertEquals(0.45, config.treeComm.mergeThreshold)
+        assertEquals(6, config.treeComm.maxIterations)
     }
 
     @Test

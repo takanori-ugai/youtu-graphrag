@@ -18,6 +18,10 @@ data class TreeCommConfig(
     val structWeight: Double = 0.3,
     val enableFastMode: Boolean = true,
     val maxTotalCommunities: Int = 100,
+    val enableSummary: Boolean = false,
+    val mergeThreshold: Double = 0.5,
+    val maxIterations: Int = 4,
+    val summaryMaxWords: Int = 32,
 )
 
 data class ConstructionConfig(
