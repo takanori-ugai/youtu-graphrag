@@ -15,6 +15,7 @@ import com.youtu.graphrag.shared.llm.LlmClient
 import com.youtu.graphrag.shared.llm.LlmClientFactory
 import com.youtu.graphrag.shared.llm.LlmOutputParser
 import com.youtu.graphrag.shared.treecomm.FastTreeComm
+import com.youtu.graphrag.shared.treecomm.TreeCommOptions
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
 import java.nio.file.Path
@@ -393,10 +394,23 @@ class KTBuilder(
         }
 
         val maxCommunities = config.treeComm.maxTotalCommunities.coerceAtLeast(1)
+        val treeCommOptions =
+            TreeCommOptions(
+                embeddingModel = config.treeComm.embeddingModel,
+                structWeight = config.treeComm.structWeight,
+                enableFastMode = config.treeComm.enableFastMode,
+                maxTotalCommunities = maxCommunities,
+                enableSummary = config.treeComm.enableSummary,
+                mergeThreshold = config.treeComm.mergeThreshold,
+                maxIterations = config.treeComm.maxIterations,
+                summaryMaxWords = config.treeComm.summaryMaxWords,
+            )
         val communities =
-            FastTreeComm()
-                .detectCommunities(entityRelationships)
-                .take(maxCommunities)
+            FastTreeComm(llmClient)
+                .detectCommunities(
+                    relationships = entityRelationships,
+                    options = treeCommOptions,
+                )
 
         communities.forEachIndexed { index, community ->
             val members =
@@ -414,8 +428,11 @@ class KTBuilder(
                     label = "community",
                     properties =
                         mapOf(
-                            "name" to "Community_${index + 1}",
-                            "description" to "Community of ${members.size} members",
+                            "name" to community["name"]?.toString().orEmpty().ifBlank { "Community_${index + 1}" },
+                            "description" to
+                                community["summary"]?.toString().orEmpty().ifBlank {
+                                    "Community of ${members.size} members"
+                                },
                             "community_id" to communityId,
                             "node_count" to members.size.toString(),
                             "edge_count" to community["edge_count"]?.toString().orEmpty(),

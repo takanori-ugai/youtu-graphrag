@@ -168,6 +168,18 @@ class ConfigManager(
         require(treeComm.structWeight in 0.0..1.0) {
             "struct_weight must be between 0 and 1"
         }
+        require(treeComm.mergeThreshold in 0.0..1.0) {
+            "merge_threshold must be between 0 and 1"
+        }
+        require(treeComm.maxIterations > 0) {
+            "max_iterations must be positive"
+        }
+        require(treeComm.maxTotalCommunities > 0) {
+            "max_total_communities must be positive"
+        }
+        require(treeComm.summaryMaxWords > 0) {
+            "summary_max_words must be positive"
+        }
     }
 
     private fun deepMerge(
