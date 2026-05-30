@@ -219,13 +219,16 @@
         "(Alice, member_of, Community_1)"
       ],
       "chunk_ids": [
-        "c1"
+        "c1",
+        "c2"
       ],
       "chunk_contents": [
-        "Alice is a member of Community_1."
+        "Alice is a member of Community_1.",
+        "Alice is a representative keyword for Community_1."
       ],
       "chunk_retrieval_prefixes": [
-        "[Chunk c1]"
+        "[Chunk c1]",
+        "[Chunk c2]"
       ],
       "retrieval_strategy_prefix": ""
     }

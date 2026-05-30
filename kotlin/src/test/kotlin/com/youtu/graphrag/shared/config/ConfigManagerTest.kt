@@ -168,5 +168,31 @@ class ConfigManagerTest {
                 ),
             )
         }
+        assertFailsWith<IllegalArgumentException> {
+            config.overrideConfig(
+                mapOf(
+                    "retrieval" to
+                        mapOf(
+                            "strategy" to
+                                mapOf(
+                                    "enabled" to listOf("lexical-triple"),
+                                ),
+                        ),
+                ),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            config.overrideConfig(
+                mapOf(
+                    "retrieval" to
+                        mapOf(
+                            "strategy" to
+                                mapOf(
+                                    "weights" to mapOf("lexical-triple" to 1.0),
+                                ),
+                        ),
+                ),
+            )
+        }
     }
 }

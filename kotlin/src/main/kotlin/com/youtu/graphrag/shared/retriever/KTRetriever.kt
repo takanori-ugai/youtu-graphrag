@@ -134,8 +134,7 @@ class KTRetriever private constructor(
         private val logger = KotlinLogging.logger {}
         private val mapper = ObjectMapper().registerKotlinModule()
         private val EXCLUDED_OUTPUT_RELATIONS = setOf("represented_by", "kw_filter_by")
-        private val RELATION_BONUS_RELATIONS = setOf("is", "was", "has", "had", "contains", "located", "born", "died")
-        private const val MIN_TRIPLE_SCORE = 0.05
+        private val COMMUNITY_RELATIONS = setOf("member_of", "keyword_of", "represented_by", "kw_filter_by")
 
         fun createAndBuild(
             datasetName: String,
@@ -267,16 +266,16 @@ class KTRetriever private constructor(
                             if (!config.retrieval.enableHighRecall) {
                                 emptyMap()
                             } else {
+                                val seedSet = seedTriples.toSet()
                                 expandedTriples.associateWith { triple ->
-                                    if (triple in seedTriples) 1.0 else 0.6
+                                    if (triple in seedSet) 1.0 else 0.6
                                 }
                             }
                         },
                         "community_triple" to {
                             retrievalPool
                                 .filter { record ->
-                                    record.relation.lowercase(Locale.ROOT) in
-                                        setOf("member_of", "keyword_of", "represented_by", "kw_filter_by")
+                                    record.relation.lowercase(Locale.ROOT) in COMMUNITY_RELATIONS
                                 }.associateWith { record ->
                                     0.4 + keywordMatchCount(record.searchableText, normalizedQuestionKeywords).toDouble()
                                 }
@@ -630,7 +629,7 @@ class KTRetriever private constructor(
                 val semaphore = Semaphore(maxConcurrency.coerceAtLeast(1))
                 active
                     .map { (strategyName, strategyFn) ->
-                        async(Dispatchers.Default) {
+                        async(Dispatchers.IO) {
                             semaphore.withPermit {
                                 val scores =
                                     withTimeoutOrNull(timeoutMs) {
@@ -708,12 +707,10 @@ class KTRetriever private constructor(
             return emptyMap()
         }
         val maxScore = positives.values.maxOrNull() ?: return emptyMap()
-        val minScore = positives.values.minOrNull() ?: return emptyMap()
-        if (maxScore == minScore) {
-            return positives.mapValues { 1.0 }
+        if (maxScore <= 0.0) {
+            return emptyMap()
         }
-        val range = maxScore - minScore
-        return positives.mapValues { (_, value) -> (value - minScore) / range }
+        return positives.mapValues { (_, value) -> value / maxScore }
     }
 
     private fun filterTriplesByInvolvedTypes(
@@ -835,58 +832,6 @@ class KTRetriever private constructor(
             .asSequence()
             .filter { hit -> hit.item in allowed }
             .associate { hit -> hit.item to hit.score }
-    }
-
-    private fun rankTriplesPythonCompatible(
-        triples: List<TripleRecord>,
-        questionKeywords: Set<String>,
-        vectorScores: Map<TripleRecord, Double>,
-        topLimit: Int,
-    ): List<ScoredTriple> {
-        if (triples.isEmpty()) {
-            return emptyList()
-        }
-
-        val scored =
-            if (vectorScores.isNotEmpty()) {
-                triples.mapNotNull { triple ->
-                    val similarity = vectorScores[triple] ?: return@mapNotNull null
-                    val relationBonus =
-                        if (triple.relation.lowercase(Locale.ROOT) in RELATION_BONUS_RELATIONS) {
-                            0.1
-                        } else {
-                            0.0
-                        }
-                    val finalScore = maxOf(0.0, similarity + relationBonus)
-                    if (finalScore <= MIN_TRIPLE_SCORE) {
-                        return@mapNotNull null
-                    }
-                    ScoredTriple(
-                        record = triple,
-                        score = finalScore,
-                        ordinal = tripleOrdinalByRecord[triple] ?: Int.MAX_VALUE,
-                    )
-                }
-            } else {
-                triples.map { triple ->
-                    val lexicalScore = keywordMatchCount(triple.searchableText, questionKeywords).toDouble()
-                    ScoredTriple(
-                        record = triple,
-                        score = lexicalScore,
-                        ordinal = tripleOrdinalByRecord[triple] ?: Int.MAX_VALUE,
-                    )
-                }
-            }
-
-        if (scored.isEmpty()) {
-            return emptyList()
-        }
-
-        return scored
-            .sortedWith(
-                compareByDescending<ScoredTriple> { value -> value.score }
-                    .thenBy { value -> value.ordinal },
-            ).take(topLimit)
     }
 
     private fun formatTripleWithScore(

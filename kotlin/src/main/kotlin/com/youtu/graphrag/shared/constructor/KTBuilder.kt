@@ -914,11 +914,6 @@ class KTBuilder(
             newSchemaTypes = emptyMap(),
         )
 
-    private fun extractKeyword(text: String): String? {
-        val tokenRegex = Regex("[\\p{L}\\p{N}_]{3,}")
-        return tokenRegex.find(text)?.value?.lowercase()
-    }
-
     private fun writeChunksFile(chunks: List<ChunkRecord>) {
         val chunkFile = resolveOutputPath(config.output.chunksDir).resolve("$datasetName.txt")
         chunkFile.parent?.createDirectories()

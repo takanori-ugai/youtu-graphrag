@@ -8,6 +8,7 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Locale
 
 class ConfigManager(
     configPath: String? = null,
@@ -171,10 +172,30 @@ class ConfigManager(
         require(retrieval.strategy.maxConcurrency > 0) {
             "retrieval.strategy.max_concurrency must be positive"
         }
-        require(retrieval.strategy.enabled.isNotEmpty()) {
+        val validRetrievalStrategies =
+            setOf(
+                "lexical_triple",
+                "semantic_triple",
+                "path_expand",
+                "community_triple",
+                "lexical_chunk",
+                "semantic_chunk",
+                "triple_chunk_bridge",
+            )
+        val enabledStrategies =
+            retrieval.strategy.enabled.map { strategy ->
+                strategy.lowercase(Locale.ROOT)
+            }
+        require(enabledStrategies.isNotEmpty()) {
             "retrieval.strategy.enabled must not be empty"
         }
+        require(enabledStrategies.all { strategy -> strategy in validRetrievalStrategies }) {
+            "retrieval.strategy.enabled contains unknown strategy"
+        }
         retrieval.strategy.weights.forEach { (strategy, weight) ->
+            require(strategy.lowercase(Locale.ROOT) in validRetrievalStrategies) {
+                "retrieval.strategy.weights[$strategy] is not a supported strategy"
+            }
             require(weight >= 0.0) {
                 "retrieval.strategy.weights[$strategy] must be non-negative"
             }
