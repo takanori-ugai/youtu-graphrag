@@ -80,7 +80,7 @@ dependencies {
     implementation("io.insert-koin:koin-core:$koinVersion")
     implementation("io.insert-koin:koin-logger-slf4j:$koinVersion")
 
-    implementation("com.auth0:java-jwt:4.5.1")
+    implementation("com.auth0:java-jwt:4.5.2")
     // JTokkit
     implementation("com.knuddels:jtokkit:1.1.0")
 
