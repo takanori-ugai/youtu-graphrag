@@ -22,7 +22,7 @@ val koinVersion = "4.2.1"
 val osName = System.getProperty("os.name").lowercase()
 val archName = System.getProperty("os.arch").lowercase()
 val networkAnalysisVersion = "1.3.0"
-val jgraphtVersion = "1.5.2"
+val jgraphtVersion = "1.5.3"
 val javafxVersion = "21.0.5"
 val javafxPlatform =
     when {
@@ -62,17 +62,17 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("io.github.oshai:kotlin-logging-jvm:8.0.01")
     implementation("com.github.haifengl:smile-core:4.4.2")
-    implementation("gg.jte:jte-kotlin:3.2.3")
+    implementation("gg.jte:jte-kotlin:3.2.4")
     implementation("org.apache.commons:commons-csv:1.14.1")
     implementation("org.apache.pdfbox:pdfbox:3.0.7")
     implementation("org.apache.poi:poi-ooxml:5.5.1")
     implementation("org.apache.poi:poi-scratchpad:5.5.1")
 
     // LangChain4j dependencies
-    implementation("dev.langchain4j:langchain4j:1.15.0")
-    implementation("dev.langchain4j:langchain4j-open-ai:1.15.0")
+    implementation("dev.langchain4j:langchain4j:1.16.1")
+    implementation("dev.langchain4j:langchain4j-open-ai:1.16.1")
     implementation("dev.langchain4j:langchain4j-open-ai-official:1.16.1-beta26")
-    implementation("dev.langchain4j:langchain4j-ollama:1.15.0")
+    implementation("dev.langchain4j:langchain4j-ollama:1.16.1")
     implementation("dev.langchain4j:langchain4j-community-neo4j:1.16.0-beta26")
 
     // Koin for Ktor
