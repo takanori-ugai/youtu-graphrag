@@ -106,7 +106,7 @@ dependencies {
     implementation("info.picocli:picocli:4.7.6")
     implementation("nl.cwts:networkanalysis:$networkAnalysisVersion")
     implementation("org.jetbrains.kotlinx:multik-default:0.3.1")
-    implementation("org.apache.opennlp:opennlp-tools:2.5.4")
+    implementation("org.apache.opennlp:opennlp-tools:2.5.9")
 }
 
 tasks {
