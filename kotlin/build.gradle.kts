@@ -133,6 +133,9 @@ tasks {
 
     shadowJar {
         isZip64 = true
+        filesMatching("META-INF/*.kotlin_module") {
+            duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        }
     }
 }
 
