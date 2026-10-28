@@ -65,8 +65,8 @@ dependencies {
     implementation("gg.jte:jte-kotlin:3.2.4")
     implementation("org.apache.commons:commons-csv:1.14.1")
     implementation("org.apache.pdfbox:pdfbox:3.0.8")
-    implementation("org.apache.poi:poi-ooxml:5.5.1")
-    implementation("org.apache.poi:poi-scratchpad:5.5.1")
+    implementation("org.apache.poi:poi-ooxml:6.0.0")
+    implementation("org.apache.poi:poi-scratchpad:6.0.0")
 
     // LangChain4j dependencies
     implementation("dev.langchain4j:langchain4j:1.22.0")
