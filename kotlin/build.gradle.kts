@@ -95,7 +95,7 @@ dependencies {
     implementation("org.openjfx:javafx-graphics:$javafxVersion:$javafxPlatform")
     implementation("org.openjfx:javafx-controls:$javafxVersion:$javafxPlatform")
 
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.22.4")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.23.0")
     implementation("org.jgrapht:jgrapht-core:$jgraphtVersion")
     implementation("org.apache.lucene:lucene-core:10.6.0")
     implementation("org.apache.lucene:lucene-analysis-common:10.6.0")
